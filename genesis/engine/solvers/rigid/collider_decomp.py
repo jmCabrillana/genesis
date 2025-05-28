@@ -1147,6 +1147,7 @@ class Collider:
 
     @ti.func
     def _func_add_contact(self, i_ga, i_gb, normal, contact_pos, penetration, i_b):
+        #print("normal: ", normal, "contact_pos:", contact_pos, "penetration:", penetration)
         i_col = self.n_contacts[i_b]
 
         if i_col == self._max_contact_pairs:
@@ -1440,7 +1441,7 @@ class Collider:
         '''
         if self._solver.geoms_info[i_ga].type > self._solver.geoms_info[i_gb].type:
             i_gb, i_ga = i_ga, i_gb
-
+            
         if (
             self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.PLANE
             and self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
@@ -1458,7 +1459,8 @@ class Collider:
             # print("GJK normal: ", self._gjk_epa.gjk_normal[i_b])
             
             self._gjk_epa.func_epa_contact(i_ga, i_gb, i_b)
-            self._gjk_epa.epa_normal[i_b] = -self._gjk_epa.epa_normal[i_b]  # normal should be reverted for Genesis
+            # invert normal, so that the normal points toward [i_ga] (starting from [i_gb])
+            self._gjk_epa.epa_normal[i_b] = -self._gjk_epa.epa_normal[i_b]
             
             # print("EPA Done")
             # print("EPA Depth: ", self._gjk_epa.epa_depth[i_b])

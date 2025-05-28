@@ -406,7 +406,7 @@ class GJKEPA:
                     mat8 * normal[0] + mat9 * normal[1] + mat10 * normal[2],
                 )
                 
-                _, p = self.gjk_support_geom(n, i_ga, i_b)
+                _, p = self.gjk_support_geom(-n, i_ga, i_b)                 # since normal points toward [i_ga], should invert it to get contact point on [i_ga]
                 self.mc_v1[i_b, v1count][0] = ti.math.dot(p, dir)
                 self.mc_v1[i_b, v1count][1] = ti.math.dot(p, dir2)
                 self.mc_v1[i_b, v1count][2] = ti.math.dot(p, normal)
@@ -416,7 +416,6 @@ class GJKEPA:
                 elif self.any_different(self.mc_v1[i_b, v1count], self.mc_v1[i_b, v1count-1]):
                     v1count += 1
 
-                n = -n
                 _, p = self.gjk_support_geom(n, i_gb, i_b)
                 self.mc_v2[i_b, v2count][0] = ti.math.dot(p, dir)
                 self.mc_v2[i_b, v2count][1] = ti.math.dot(p, dir2)
@@ -544,11 +543,12 @@ class GJKEPA:
                     # skip contact points that are too close
                     if ti.math.length(pt - last_pt) <= 1e-6:
                         continue
-
+                    
                     self.mc_contact_points[i_b, contact_count] = pt
                     last_pt = pt
-                    contact_count += 1
-                    
+                    contact_count += 1      
+            # @TODO: check stability of the below code
+            '''
             else:            
                 # Polygon intersection was not found. Loop through all vertex pairs and
                 # calculate an approximate contact point.
@@ -608,7 +608,8 @@ class GJKEPA:
                     self.mc_contact_points[i_b, k] = var_rx
                 
                 contact_count = 1
-
+            '''
+            
         self.mc_contact_count[i_b] = contact_count
     
     @ti.func
