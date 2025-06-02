@@ -19,7 +19,7 @@ class GJKEPA:
         #@TODO: remove [FLOAT_MAX]
         self.FLOAT_MAX = float(1e30)
         #@TODO: make this a parameter
-        self.gjk_iterations = 1
+        self.gjk_iterations = 50
         self.epa_depth_extension = 0.1
         self.epa_exact_neg_distance = False
         self.epa_iterations = 12
@@ -158,8 +158,8 @@ class GJKEPA:
                 normal = self.gjk_plane[i_b, index]
                 
             # preserve winding order of the simplex faces
-            index1 = (index + 1) & 3
-            index2 = (index + 2) & 3
+            index1 = (index + 1) % 4
+            index2 = (index + 2) % 4
             swap = self.gjk_simplex[i_b, index1]
             self.gjk_simplex[i_b, index1] = self.gjk_simplex[i_b, index2]
             self.gjk_simplex[i_b, index2] = swap

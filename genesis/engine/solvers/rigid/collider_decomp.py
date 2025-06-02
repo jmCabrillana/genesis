@@ -8,7 +8,8 @@ import genesis.utils.geom as gu
 from genesis.styles import colors, formats
 
 from .mpr_decomp import MPR
-from .gjk_epa_decomp import GJKEPA
+from .gjk_epa_decomp_mjwarp import GJKEPA as GJKEPAmw
+from .gjk_epa_decomp_mj import GJKEPA as GJKEPAmj
 
 if TYPE_CHECKING:
     from genesis.engine.solvers.rigid.rigid_solver_decomp import RigidSolver
@@ -39,7 +40,7 @@ class Collider:
         self._init_verts_connectivity()
         self._init_collision_fields()
         self._mpr = MPR(rigid_solver)
-        self._gjk_epa = GJKEPA(rigid_solver)
+        self._gjk_epa = GJKEPAmw(rigid_solver)
         self.use_gjk = self._solver._options.use_gjk_collision
 
         # multi contact perturbation and tolerance
