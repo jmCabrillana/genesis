@@ -14,6 +14,7 @@ EPA_P3_INVALID_V4 = 5
 EPA_P3_INVALID_V5 = 6
 EPA_P3_MISSING_ORIGIN = 7
 EPA_P3_ORIGIN_ON_FACE = 8
+EPA_P4_MISSING_ORIGIN = 9
 
 @ti.data_oriented
 class GJKEPA:
@@ -666,6 +667,10 @@ class GJKEPA:
     EPA algorithms
     '''
     @ti.func
+    def func_epa(self, i_ga, i_gb, i_b):
+        pass
+    
+    @ti.func
     def func_epa_insert_vertex_to_polytope(self, i_b, obj1_point, obj2_point, minkowski_point):
         '''
         Copy vertex information into the polytope.
@@ -880,13 +885,67 @@ class GJKEPA:
         '''
         flag = 0
         
-        # Get the simplex vertices
-        v1 = self.gjk_simplex_vertex[i_b, 0].minkowski
-        v2 = self.gjk_simplex_vertex[i_b, 1].minkowski
-        v3 = self.gjk_simplex_vertex[i_b, 2].minkowski
-        v4 = self.gjk_simplex_vertex[i_b, 3].minkowski
+        # Insert simplex vertices into the polytope
+        v1 = self.func_epa_insert_vertex_to_polytope(
+            i_b,
+            self.gjk_simplex_vertex[i_b, 0].support_point_obj1,
+            self.gjk_simplex_vertex[i_b, 0].support_point_obj2,
+            self.gjk_simplex_vertex[i_b, 0].minkowski
+        )
+        v2 = self.func_epa_insert_vertex_to_polytope(
+            i_b,
+            self.gjk_simplex_vertex[i_b, 1].support_point_obj1,
+            self.gjk_simplex_vertex[i_b, 1].support_point_obj2,
+            self.gjk_simplex_vertex[i_b, 1].minkowski
+        )
+        v3 = self.func_epa_insert_vertex_to_polytope(
+            i_b,
+            self.gjk_simplex_vertex[i_b, 2].support_point_obj1,
+            self.gjk_simplex_vertex[i_b, 2].support_point_obj2,
+            self.gjk_simplex_vertex[i_b, 2].minkowski
+        )
+        v4 = self.func_epa_insert_vertex_to_polytope(
+            i_b,
+            self.gjk_simplex_vertex[i_b, 3].support_point_obj1,
+            self.gjk_simplex_vertex[i_b, 3].support_point_obj2,
+            self.gjk_simplex_vertex[i_b, 3].minkowski
+        )
         
+        # If origin is on any face of the tetrahedron,
+        # replace the simplex with a 2-simplex (triangle)
+        attach_flag = 0
+        if self.func_attach_face_to_polytope(i_b, v1, v2, v3, 1, 3, 2) < self.EPS_SQ:
+            self.func_replace_simplex_3(i_b, v1, v2, v3)
+            flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+            attach_flag = 1
         
+        if self.func_attach_face_to_polytope(i_b, v1, v4, v2, 2, 3, 0) < self.EPS_SQ:
+            self.func_replace_simplex_3(i_b, v1, v4, v2)
+            flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+            attach_flag = 1
+            
+        if self.func_attach_face_to_polytope(i_b, v1, v3, v4, 0, 3, 1) < self.EPS_SQ:
+            self.func_replace_simplex_3(i_b, v1, v3, v4)
+            flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+            attach_flag = 1
+            
+        if self.func_attach_face_to_polytope(i_b, v4, v3, v2, 2, 0, 1) < self.EPS_SQ:
+            self.func_replace_simplex_3(i_b, v4, v3, v2)
+            flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+            attach_flag = 1
+            
+        if not attach_flag:
+            # If the tetrahedron does not contain the origin,
+            # we do not proceed anymore.
+            if not self.func_origin_tetra_intersection(
+                self.polytope_verts[i_b, v1].minkowski,
+                self.polytope_verts[i_b, v2].minkowski,
+                self.polytope_verts[i_b, v3].minkowski,
+                self.polytope_verts[i_b, v4].minkowski
+            ):
+                flag = EPA_P4_MISSING_ORIGIN
+        
+        return flag
     
     @ti.func
     def func_epa_support(self, i_ga, i_gb, i_b, dir, dir_norm):
