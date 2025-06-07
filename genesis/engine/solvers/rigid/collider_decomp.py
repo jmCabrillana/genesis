@@ -9,7 +9,7 @@ from genesis.styles import colors, formats
 
 from .mpr_decomp import MPR
 from .gjk_epa_decomp_mjwarp import GJKEPA as GJKEPAmw
-from .gjk_epa_decomp_mj import GJKEPA as GJKEPAmj
+from .gjk_epa_decomp_mj import GJKEPA as GJKEPAmj, EPA_P2_FALLBACK3, EPA_P4_FALLBACK3
 
 if TYPE_CHECKING:
     from genesis.engine.solvers.rigid.rigid_solver_decomp import RigidSolver
@@ -1150,7 +1150,7 @@ class Collider:
 
     @ti.func
     def _func_add_contact(self, i_ga, i_gb, normal, contact_pos, penetration, i_b):
-        #print("normal: ", normal, "contact_pos:", contact_pos, "penetration:", penetration)
+        # print("normal: ", normal, "contact_pos:", contact_pos, "penetration:", penetration)
         i_col = self.n_contacts[i_b]
 
         if i_col == self._max_contact_pairs:
@@ -1500,23 +1500,27 @@ class Collider:
         '''
         if self._solver.geoms_info[i_ga].type > self._solver.geoms_info[i_gb].type:
             i_gb, i_ga = i_ga, i_gb
-            
+        
+        print("")
+        print("[Genesis GJK-EPA] Pair: ", i_ga, i_gb, "Batch: ", i_b)
         if (
             self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.PLANE
             and self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
         ):
             self._func_plane_box_multi_contact(i_ga, i_gb, i_b)
         else:
-            print("=== [GJK-EPA] Pair: ", i_ga, i_gb, "Batch: ", i_b)
+            #print("=== [GJK-EPA] Pair: ", i_ga, i_gb, "Batch: ", i_b)
             
             margin = 0      # @TODO: margin for geoms?
             
+            print("GJK started")
             collided = self._gjk_epa_mj.func_gjk(i_ga, i_gb, i_b)  
             distance = self._gjk_epa_mj.distance[i_b]
             nsimplex = self._gjk_epa_mj.gjk_nsimplex[i_b]
             print("GJK Done")
             print("GJK Collision: ", collided)
-            print(f"GJK Distance: {distance:.15f}")
+            print("GJK Nsimplex: ", nsimplex)
+            print(f"GJK Distance: {distance:.20g}")
 
             if collided and nsimplex > 1:
                 # Assume touching
@@ -1531,13 +1535,36 @@ class Collider:
                 polytope_flag = 0
                 if nsimplex == 2:
                     polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_2d(i_ga, i_gb, i_b)
-                # elif nsimplex == 3:
-                #     polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
-                # else:
-                #     polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_4d(i_ga, i_gb, i_b)
+                elif nsimplex == 4:
+                    polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_4d(i_ga, i_gb, i_b)
                 
-                print("EPA Nsimplex: ", nsimplex)
-                print("EPA Polytope Flag: ", polytope_flag)
+                # Polytope 3D could be used as a fallback for 2D and 4D cases, but it is not necessary
+                if nsimplex == 3 or (polytope_flag == EPA_P2_FALLBACK3 or polytope_flag == EPA_P4_FALLBACK3):
+                    polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+                
+                # print("EPA Nsimplex: ", nsimplex)
+                # print("EPA Polytope Flag: ", polytope_flag)
+
+                # Run EPA from the polytope
+                if polytope_flag == 0:
+                    self._gjk_epa_mj.func_epa(i_ga, i_gb, i_b)
+                    print("EPA Done.")
+                    distance = self._gjk_epa_mj.distance[i_b]
+                    print(f"EPA Distance: {distance:.20g}")
+                    normal = self._gjk_epa_mj.normal[i_b]
+                    print("EPA Normal: ", f"{normal[0]:.20g}, {normal[1]:.20g}, {normal[2]:.20g}")
+
+                    if distance < 0:
+                        # invert normal, so that the normal points toward [i_ga] (starting from [i_gb])
+                        normal = -normal
+
+                        penetration = -distance
+                        witness_a = self._gjk_epa_mj.witness[i_b, 0].point_obj1
+                        witness_b = self._gjk_epa_mj.witness[i_b, 0].point_obj2
+                        contact_pos = 0.5 * (witness_a + witness_b)
+                        #print("Contact pos: ", contact_pos)
+                        self._func_add_contact(i_ga, i_gb, normal, contact_pos, penetration, i_b)
+
 
     @ti.func
     def _func_rotate_frame(self, i_g, contact_pos, qrot, i_b):
@@ -1549,6 +1576,13 @@ class Collider:
         vec = gu.ti_transform_by_quat(rel, qrot)
         vec = vec - rel
         self._solver.geoms_state[i_g, i_b].pos = self._solver.geoms_state[i_g, i_b].pos - vec
+
+    @ti.func
+    def _func_plane_sphere_contact(self, i_ga: ti.i32, i_gb: ti.i32, i_b: ti.i32):
+        """
+        Use Mujoco's plane-sphere contact detection algorithm for more stable collision detection.
+        """
+        pass
 
     @ti.func
     def _func_box_box_contact(self, i_ga: ti.i32, i_gb: ti.i32, i_b: ti.i32):

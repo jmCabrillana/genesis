@@ -2137,3 +2137,35 @@ def test_mesh_to_heightfield(show_viewer):
     # speed is around 0
     qvel = ball.get_dofs_velocity().cpu()
     assert_allclose(qvel, 0, atol=1e-2)
+
+@pytest.mark.parametrize("xml_path", ["xml/two_tet.xml"])
+@pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
+@pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_two_tet(gs_sim, mj_sim, gs_solver, tol):
+    # Make sure it is possible to set the configuration vector without failure
+    gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
+
+    if gs_sim.rigid_solver.is_active():
+        gs_sim.rigid_solver.collider.use_gjk = USE_GJK
+    if gs_sim.avatar_solver.is_active():
+        gs_sim.avatar_solver.collider.use_gjk = USE_GJK
+    check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
+    tol = 2e-9 if gs_solver == gs.constraint_solver.Newton else tol
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=300, tol=tol)
+
+@pytest.mark.parametrize("xml_path", ["xml/tet_ball.xml"])
+@pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
+@pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_tet_ball(gs_sim, mj_sim, gs_solver, tol):
+    # Make sure it is possible to set the configuration vector without failure
+    gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
+
+    if gs_sim.rigid_solver.is_active():
+        gs_sim.rigid_solver.collider.use_gjk = USE_GJK
+    if gs_sim.avatar_solver.is_active():
+        gs_sim.avatar_solver.collider.use_gjk = USE_GJK
+    check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
+    tol = 2e-9 if gs_solver == gs.constraint_solver.Newton else tol
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=500, tol=tol)

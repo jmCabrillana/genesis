@@ -298,13 +298,15 @@ class GJKEPA:
                         dd = self.FLOAT_MAX
 
                     if (dd < 0 and depth >= 0) or (
-                        tqj2[0] == pii[0] and tqj2[1] == pii[1] and tqj2[2] == pii[2]
+                        tqj2[0] == pii[0] and tqj2[1] == pii[1]  and tqj2[2] == pii[2]
                     ):
                         self.epa_dists[i_b][i * 3 + j] = self.FLOAT_MAX
                     else:
                         self.epa_dists[i_b][i * 3 + j] = dd
 
                 if i == count - 1:
+                    # If we looked through all triangles on the current polytope,
+                    # expand the polytope by adding new triangles.
                     prev_count = count
                     count = min(count * 3, self.EPS_BEST_COUNT)
                     self.epa_expand_polytope(i_b, count, prev_count)
@@ -332,6 +334,7 @@ class GJKEPA:
             child_index = best % 3
             
             # fill in the new triangle at the next index
+            # @TODO: This part is erroneous; we save the same triangle multiple times
             self.epa_tris[i_b, self.TRIS_DIM + j * 3 + 0] = self.epa_tris[i_b, parent_index * 3 + child_index]
             self.epa_tris[i_b, self.TRIS_DIM + j * 3 + 1] = self.epa_tris[i_b, parent_index * 3 + ((child_index + 1) % 3)]
             self.epa_tris[i_b, self.TRIS_DIM + j * 3 + 2] = self.epa_p[i_b, parent_index]
@@ -341,7 +344,7 @@ class GJKEPA:
             swap = self.epa_tris[i_b, self.TRIS_DIM + r]
             self.epa_tris[i_b, self.TRIS_DIM + r] = self.epa_tris[i_b, r]
             self.epa_tris[i_b, r] = swap
-        
+
     @ti.func
     def func_multiple_contacts(self, i_ga, i_gb, i_b):
         '''
