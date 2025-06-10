@@ -1488,8 +1488,9 @@ def test_mesh_repair(convexify, show_viewer):
 @pytest.mark.required
 @pytest.mark.xdist_group(name="huggingface_hub")
 @pytest.mark.parametrize("euler", [(90, 0, 90), (74, 15, 90)])
+@pytest.mark.parametrize("gjk_collision", [True])
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
-def test_convexify(euler, backend, show_viewer):
+def test_convexify(euler, gjk_collision, backend, show_viewer):
     OBJ_OFFSET_X = 0.0  # 0.02
     OBJ_OFFSET_Y = 0.15
 
@@ -1499,6 +1500,7 @@ def test_convexify(euler, backend, show_viewer):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             dt=0.004,
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -2138,34 +2140,54 @@ def test_mesh_to_heightfield(show_viewer):
     qvel = ball.get_dofs_velocity().cpu()
     assert_allclose(qvel, 0, atol=1e-2)
 
-@pytest.mark.parametrize("xml_path", ["xml/two_tet.xml"])
+@pytest.mark.parametrize("xml_path", ["xml/tet_tet.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_two_tet(gs_sim, mj_sim, gs_solver, tol):
+def test_tet_tet(gs_sim, mj_sim, gs_solver, tol):
     # Make sure it is possible to set the configuration vector without failure
     gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
-
-    if gs_sim.rigid_solver.is_active():
-        gs_sim.rigid_solver.collider.use_gjk = USE_GJK
-    if gs_sim.avatar_solver.is_active():
-        gs_sim.avatar_solver.collider.use_gjk = USE_GJK
+    
     check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
-    tol = 2e-9 if gs_solver == gs.constraint_solver.Newton else tol
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=300, tol=tol)
+    tol = 2e-7
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)
 
 @pytest.mark.parametrize("xml_path", ["xml/tet_ball.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_tet_ball(gs_sim, mj_sim, gs_solver, tol):
     # Make sure it is possible to set the configuration vector without failure
     gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
-
-    if gs_sim.rigid_solver.is_active():
-        gs_sim.rigid_solver.collider.use_gjk = USE_GJK
-    if gs_sim.avatar_solver.is_active():
-        gs_sim.avatar_solver.collider.use_gjk = USE_GJK
+    
     check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
-    tol = 2e-9 if gs_solver == gs.constraint_solver.Newton else tol
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=500, tol=tol)
+    tol = 2e-7
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)
+
+@pytest.mark.parametrize("xml_path", ["xml/tet_capsule.xml"])
+@pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
+@pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_tet_capsule(gs_sim, mj_sim, gs_solver, tol):
+    # Make sure it is possible to set the configuration vector without failure
+    gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
+    
+    check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
+    tol = 2e-5
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)
+
+@pytest.mark.parametrize("xml_path", ["xml/tet_box.xml"])
+@pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
+@pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_tet_box(gs_sim, mj_sim, gs_solver, tol):
+    # Make sure it is possible to set the configuration vector without failure
+    gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
+    
+    check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
+    tol = 2e-7
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)

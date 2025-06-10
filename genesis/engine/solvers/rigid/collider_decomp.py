@@ -280,7 +280,7 @@ class Collider:
         timer.stamp("func_update_aabbs")
         self._func_broad_phase()
         timer.stamp("func_broad_phase")
-        self._func_narrow_phase(self.use_gjk)
+        self._func_narrow_phase()
         timer.stamp("func_narrow_phase")
         if self._has_terrain:
             self._func_narrow_phase_terrain()
@@ -959,7 +959,7 @@ class Collider:
                             pass
 
     @ti.kernel
-    def _func_narrow_phase(self, use_gjk: ti.int32):
+    def _func_narrow_phase(self):
         #@TODO: remove [use_gjk] and make it a compile time constant
         """
         NOTE: for a single non-batched scene with a lot of collisioin pairs, it will be faster if we also parallelize over `self.n_collision_pairs`.
@@ -988,12 +988,12 @@ class Collider:
                         ):
                             self._func_box_box_contact(i_ga, i_gb, i_b)
                         else:
-                            if use_gjk:
+                            if self.use_gjk:
                                 self._func_gjk_epa_mj(i_ga, i_gb, i_b)
                             else:
                                 self._func_mpr(i_ga, i_gb, i_b)
                     else:
-                        if use_gjk:
+                        if self.use_gjk:
                             self._func_gjk_epa_mj(i_ga, i_gb, i_b)
                         else:
                             self._func_mpr(i_ga, i_gb, i_b)

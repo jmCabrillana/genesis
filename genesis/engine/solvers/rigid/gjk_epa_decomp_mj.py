@@ -158,6 +158,14 @@ class GJKEPA:
         # The support vector should be a non-zero vector.
         approx_witness_point_obj1 = self._solver.geoms_state[i_ga, i_b].pos
         approx_witness_point_obj2 = self._solver.geoms_state[i_gb, i_b].pos
+        print("Initial guess (x1_k): ", 
+              f"{approx_witness_point_obj1[0]:.20g}",
+              f"{approx_witness_point_obj1[1]:.20g}", 
+              f"{approx_witness_point_obj1[2]:.20g}")
+        print("Initial guess (x2_k): ", 
+            f"{approx_witness_point_obj2[0]:.20g}",
+            f"{approx_witness_point_obj2[1]:.20g}", 
+            f"{approx_witness_point_obj2[2]:.20g}")
         support_vector = approx_witness_point_obj1 - approx_witness_point_obj2
         
         if support_vector.dot(support_vector) < self.FLOAT_MIN_SQ:
@@ -261,7 +269,8 @@ class GJKEPA:
                     
             # Run the distance subalgorithm to compute the barycentric
             # coordinates of the closest point to the origin in the simplex
-            _lambda = self.func_gjk_subdistance(i_b, n + 1)
+            _lambda = self.func_simple_gjk_subdistance(i_b, n + 1)
+            print("HI")
             print("Lambda: ", f"{_lambda[0]:.20g}", f"{_lambda[1]:.20g}",
                   f"{_lambda[2]:.20g}", f"{_lambda[3]:.20g}")
             
@@ -579,7 +588,7 @@ class GJKEPA:
         normal_normsq = normal.dot(normal)
         sdist = 0.0
         if (normal_normsq > self.FLOAT_MIN_SQ) and (normal_normsq < self.FLOAT_MAX_SQ):
-            normal = normal / ti.math.sqrt(normal_normsq)
+            normal = normal * (1.0 / ti.math.sqrt(normal_normsq))
             sdist = normal.dot(vertex_1)
             # if sdist == 0:
             #     print("Zero signed distance in GJK triangle info!")
@@ -679,58 +688,6 @@ class GJKEPA:
                         _lambda[k_2] = _lambda2d[1]
                         _lambda[k_3] = _lambda2d[2]
 
-            # if not sc1:
-            #     _lambda2d = self.func_gjk_subdistance_2d(i_b, i_s2, i_s3, i_s4)
-            #     closest_point = self.func_simplex_vertex_linear_comb(
-            #         i_b, 2, i_s2, i_s3, i_s4, 0, _lambda2d, 3
-            #     )
-            #     d = closest_point.dot(closest_point)
-            #     if d < dmin:
-            #         dmin = d
-            #         _lambda[0] = 0.0
-            #         _lambda[1] = _lambda2d[0]
-            #         _lambda[2] = _lambda2d[1]
-            #         _lambda[3] = _lambda2d[2]
-
-            # if not sc2:
-            #     _lambda2d = self.func_gjk_subdistance_2d(i_b, i_s1, i_s3, i_s4)
-            #     closest_point = self.func_simplex_vertex_linear_comb(
-            #         i_b, 2, i_s1, i_s3, i_s4, 0, _lambda2d, 3
-            #     )
-            #     d = closest_point.dot(closest_point)
-            #     if d < dmin:
-            #         dmin = d
-            #         _lambda[0] = _lambda2d[0]
-            #         _lambda[1] = 0.0
-            #         _lambda[2] = _lambda2d[1]
-            #         _lambda[3] = _lambda2d[2]
-            
-            # if not sc3:
-            #     _lambda2d = self.func_gjk_subdistance_2d(i_b, i_s1, i_s2, i_s4)
-            #     closest_point = self.func_simplex_vertex_linear_comb(
-            #         i_b, 2, i_s1, i_s2, i_s4, 0, _lambda2d, 3
-            #     )
-            #     d = closest_point.dot(closest_point)
-            #     if d < dmin:
-            #         dmin = d
-            #         _lambda[0] = _lambda2d[0]
-            #         _lambda[1] = _lambda2d[1]
-            #         _lambda[2] = 0.0
-            #         _lambda[3] = _lambda2d[2]
-                    
-            # if not sc4:
-            #     _lambda2d = self.func_gjk_subdistance_2d(i_b, i_s1, i_s2, i_s3)
-            #     closest_point = self.func_simplex_vertex_linear_comb(
-            #         i_b, 2, i_s1, i_s2, i_s3, 0, _lambda2d, 3
-            #     )
-            #     d = closest_point.dot(closest_point)
-            #     if d < dmin:
-            #         dmin = d
-            #         _lambda[0] = _lambda2d[0]
-            #         _lambda[1] = _lambda2d[1]
-            #         _lambda[2] = _lambda2d[2]
-            #         _lambda[3] = 0.0
-    
         return _lambda
     
     @ti.func
@@ -890,49 +847,303 @@ class GJKEPA:
                             _lambda[k_1] = _lambda1d[0]
                             _lambda[k_2] = _lambda1d[1]
                 
-                # if not sc1:
-                #     _lambda1d = self.func_gjk_subdistance_1d(i_b, i_s2, i_s3)
-                #     closest_point = self.func_simplex_vertex_linear_comb(
-                #         i_b, 2, i_s2, i_s3, 0, 0, _lambda1d, 2
-                #     )
-                #     d = closest_point.dot(closest_point)
-                #     if d < dmin:
-                #         dmin = d
-                #         _lambda[0] = 0.0
-                #         _lambda[1] = _lambda1d[0]
-                #         _lambda[2] = _lambda1d[1]
-                #         _lambda[3] = 0.0
-                        
-                # if not sc2:
-                #     _lambda1d = self.func_gjk_subdistance_1d(i_b, i_s1, i_s3)
-                #     closest_point = self.func_simplex_vertex_linear_comb(
-                #         i_b, 2, i_s1, i_s3, 0, 0, _lambda1d, 2
-                #     )
-                #     d = closest_point.dot(closest_point)
-                #     if d < dmin:
-                #         dmin = d
-                #         _lambda[0] = _lambda1d[0]
-                #         _lambda[1] = 0.0
-                #         _lambda[2] = _lambda1d[1]
-                #         _lambda[3] = 0.0
-                
-                # if not sc3:
-                #     _lambda1d = self.func_gjk_subdistance_1d(i_b, i_s1, i_s2)
-                #     closest_point = self.func_simplex_vertex_linear_comb(
-                #         i_b, 2, i_s1, i_s2, 0, 0, _lambda1d, 2
-                #     )
-                #     d = closest_point.dot(closest_point)
-                #     if d < dmin:
-                #         dmin = d
-                #         _lambda[0] = _lambda1d[0]
-                #         _lambda[1] = _lambda1d[1]
-                #         _lambda[2] = 0.0
-                #         _lambda[3] = 0.0
 
         return _lambda
     
     @ti.func
     def func_gjk_subdistance_1d(self, i_b, i_s1, i_s2):
+        
+        _lambda = gs.ti_vec4(0, 0, 0, 0)
+
+        s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
+        s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
+        p_o = self.func_project_origin_to_line(s1, s2)
+
+        mu = s1[0] - s2[0]
+        mu_max = mu
+        index = 0
+
+        mu = s1[1] - s2[1]
+        if ti.abs(mu) >= ti.abs(mu_max):
+            mu_max = mu
+            index = 1
+
+        mu = s1[2] - s2[2]
+        if ti.abs(mu) >= ti.abs(mu_max):
+            mu_max = mu
+            index = 2
+
+        C1 = p_o[index] - s2[index]
+        C2 = s1[index] - p_o[index]
+
+        # Determine if projection of origin lies inside 1-simplex
+        same = self.func_compare_sign(mu_max, C1) and self.func_compare_sign(mu_max, C2)
+        if same:
+            _lambda[0] = C1 / mu_max
+            _lambda[1] = C2 / mu_max
+        else:
+            _lambda[0] = 0.0
+            _lambda[1] = 1.0
+            
+        return _lambda
+    
+    @ti.func
+    def func_simple_gjk_subdistance(self, i_b, n):
+        _lambda = ti.math.vec4(1.0, 0.0, 0.0, 0.0)
+
+        # Whether or not the subdistance was computed 
+        # successfully for the n-simplex.
+        flag = 1
+        
+        dmin = self.FLOAT_MAX
+
+        if n == 4:
+            _lambda, flag3d = self.func_simple_gjk_subdistance_3d(i_b, 0, 1, 2, 3)
+            flag = flag3d
+        
+        if (flag == 0) or n == 3:
+            failed_3d = (n == 4)
+            num_iter = 1
+            if failed_3d:
+                # Iterate through 4 faces of the tetrahedron
+                num_iter = 4
+
+            for i in range(num_iter):
+                k_1, k_2, k_3 = 0, 1, 2
+                if i == 1:
+                    k_1, k_2, k_3 = 1, 2, 3
+                elif i == 2:
+                    k_1, k_2, k_3 = 0, 2, 3
+                elif i == 3:
+                    k_1, k_2, k_3 = 0, 1, 3
+
+                _lambda2d, flag2d = self.func_simple_gjk_subdistance_2d(i_b, k_1, k_2, k_3)
+                
+                if failed_3d:
+                    if flag2d:
+                        closest_point = self.func_simplex_vertex_linear_comb(
+                            i_b, 2, k_1, k_2, k_3, 0, _lambda2d, 3
+                        )
+                        d = closest_point.dot(closest_point)
+                        if d < dmin:
+                            dmin = d
+                            _lambda.fill(0.0)
+                            _lambda[k_1] = _lambda2d[0]
+                            _lambda[k_2] = _lambda2d[1]
+                            _lambda[k_3] = _lambda2d[2]
+                else:
+                    if flag2d:
+                        _lambda = _lambda2d
+                    flag = flag2d
+
+        if (flag == 0) or n == 2:
+            failed_3d = (n == 4)
+            failed_2d = (n == 3)
+
+            num_iter = 1
+            if failed_3d:
+                # Iterate through 6 edges of the tetrahedron
+                num_iter = 6
+            elif failed_2d:
+                # Iterate through 3 edges of the triangle
+                num_iter = 3
+
+            for i in range(num_iter):
+                k_1, k_2 = 0, 1
+                if i == 1:
+                    k_1, k_2 = 0, 2
+                elif i == 2:
+                    k_1, k_2 = 1, 2
+                elif i == 3:
+                    k_1, k_2 = 0, 3
+                elif i == 4:
+                    k_1, k_2 = 1, 3
+                elif i == 5:
+                    k_1, k_2 = 2, 3
+
+                _lambda1d = self.func_simple_gjk_subdistance_1d(i_b, k_1, k_2)
+                
+                if failed_3d or failed_2d:
+                    closest_point = self.func_simplex_vertex_linear_comb(
+                        i_b, 2, k_1, k_2, 0, 0, _lambda1d, 2
+                    )
+                    d = closest_point.dot(closest_point)
+                    if d < dmin:
+                        dmin = d
+                        _lambda.fill(0.0)
+                        _lambda[k_1] = _lambda1d[0]
+                        _lambda[k_2] = _lambda1d[1]
+                else:
+                    _lambda = _lambda1d
+
+        return _lambda
+
+    @ti.func
+    def func_simple_gjk_subdistance_3d(self, i_b, i_s1, i_s2, i_s3, i_s4):
+
+        flag = 0
+        _lambda = gs.ti_vec4(0, 0, 0, 0)
+        
+        # Simplex vertices
+        s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
+        s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
+        s3 = self.gjk_simplex_vertex[i_b, i_s3].mink
+        s4 = self.gjk_simplex_vertex[i_b, i_s4].mink
+        
+        # Compute the cofactors to find det(M),
+        # which corresponds to the signed volume of the tetrahedron
+        Cs = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        for i in range(4):
+            v1, v2, v3 = s2, s3, s4
+            if i == 1:
+                v1, v2, v3 = s1, s3, s4
+            elif i == 2:
+                v1, v2, v3 = s1, s2, s4
+            elif i == 3:
+                v1, v2, v3 = s1, s2, s3
+            Cs[i] = self.func_det3(v1, v2, v3)
+        C1, C2, C3, C4 = Cs[0], Cs[1], Cs[2], Cs[3]
+        m_det = C1 + C2 + C3 + C4
+        
+        # Compare sign of the cofactors with the determinant
+        scs = gs.ti_ivec4(0, 0, 0, 0)
+        for i in range(4):
+            scs[i] = self.func_compare_sign(Cs[i], m_det)
+        sc1, sc2, sc3, sc4 = scs[0], scs[1], scs[2], scs[3]
+        
+        if (sc1 and sc2 and sc3 and sc4):
+            # If all barycentric coordinates are positive,
+            # the origin is inside the tetrahedron  
+            for i in range(4):
+                _lambda[i] = Cs[i] / m_det
+            flag = 1
+                
+        return _lambda, flag
+
+    @ti.func
+    def func_simple_gjk_subdistance_2d(self, i_b, i_s1, i_s2, i_s3):
+        
+        _lambda = ti.math.vec4(0, 0, 0, 0)
+        flag = 0
+        
+        # Project origin onto affine hull of the simplex (triangle)
+        proj_o, proj_flag = self.func_project_origin_to_plane(
+            self.gjk_simplex_vertex[i_b, i_s1].mink,
+            self.gjk_simplex_vertex[i_b, i_s2].mink,
+            self.gjk_simplex_vertex[i_b, i_s3].mink,
+        )
+
+        if not proj_flag:
+            # We should find the barycentric coordinates of the projected point,
+            # but the linear system is not square:
+            # [ s1.x, s2.x, s3.x ] [ l1 ] = [ proj_o.x ]
+            # [ s1.y, s2.y, s3.y ] [ l2 ] = [ proj_o.y ]
+            # [ s1.z, s2.z, s3.z ] [ l3 ] = [ proj_o.z ]
+            # [ 1,    1,    1,   ] [ ?  ] = [ 1.0 ]
+            # So we remove one row before solving the system
+            # We exclude the axis with the largest projection of the simplex
+            # using the minors of the above linear system.
+            s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
+            s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
+            s3 = self.gjk_simplex_vertex[i_b, i_s3].mink
+            
+            m1 = s2[1]*s3[2] - s2[2]*s3[1] \
+                - s1[1]*s3[2] + s1[2]*s3[1] \
+                + s1[1]*s2[2] - s1[2]*s2[1]
+            m2 = s2[0]*s3[2] - s2[2]*s3[0] \
+                - s1[0]*s3[2] + s1[2]*s3[0] \
+                + s1[0]*s2[2] - s1[2]*s2[0]
+            m3 = s2[0]*s3[1] - s2[1]*s3[0] \
+                - s1[0]*s3[1] + s1[1]*s3[0] \
+                + s1[0]*s2[1] - s1[1]*s2[0]
+                
+            m_max = 0.0
+            absm1, absm2, absm3 = ti.abs(m1), ti.abs(m2), ti.abs(m3)
+            s1_2d, s2_2d, s3_2d = gs.ti_vec2(0, 0), gs.ti_vec2(0, 0), gs.ti_vec2(0, 0)
+            proj_o_2d = gs.ti_vec2(0, 0)
+            
+            if absm1 >= absm2 and absm1 >= absm3:
+                # Remove first row
+                m_max = m1
+                s1_2d[0] = s1[1]
+                s1_2d[1] = s1[2]
+                
+                s2_2d[0] = s2[1]
+                s2_2d[1] = s2[2]
+                
+                s3_2d[0] = s3[1]
+                s3_2d[1] = s3[2]
+                
+                proj_o_2d[0] = proj_o[1]
+                proj_o_2d[1] = proj_o[2]
+            elif absm2 >= absm1 and absm2 >= absm3:
+                # Remove second row
+                m_max = m2
+                s1_2d[0] = s1[0]
+                s1_2d[1] = s1[2]
+                
+                s2_2d[0] = s2[0]
+                s2_2d[1] = s2[2]
+                
+                s3_2d[0] = s3[0]
+                s3_2d[1] = s3[2]
+                
+                proj_o_2d[0] = proj_o[0]
+                proj_o_2d[1] = proj_o[2]
+            else:
+                # Remove third row
+                m_max = m3
+                s1_2d[0] = s1[0]
+                s1_2d[1] = s1[1]
+                
+                s2_2d[0] = s2[0]
+                s2_2d[1] = s2[1]
+                
+                s3_2d[0] = s3[0]
+                s3_2d[1] = s3[1]
+                
+                proj_o_2d[0] = proj_o[0]
+                proj_o_2d[1] = proj_o[1]
+                
+            # Now we find the barycentric coordinates of the projected point
+            # by solving the linear system:
+            # [ s1_2d.x, s2_2d.x, s3_2d.x ] [ l1 ] = [ proj_o_2d.x ]
+            # [ s1_2d.y, s2_2d.y, s3_2d.y ] [ l2 ] = [ proj_o_2d.y ]
+            # [ 1,       1,       1,      ] [ l3 ] = [ 1.0 ]
+            
+            # C1 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s2_2d, s3_2d)
+            C1 = proj_o_2d[0]*s2_2d[1] + proj_o_2d[1]*s3_2d[0] + s2_2d[0]*s3_2d[1] - \
+                proj_o_2d[0]*s3_2d[1] - proj_o_2d[1]*s2_2d[0] - s3_2d[0]*s2_2d[1]
+                
+            # C2 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s1_2d, s3_2d)
+            C2 = proj_o_2d[0]*s3_2d[1] + proj_o_2d[1]*s1_2d[0] + s3_2d[0]*s1_2d[1] - \
+                proj_o_2d[0]*s1_2d[1] - proj_o_2d[1]*s3_2d[0] - s1_2d[0]*s3_2d[1]
+                
+            # C3 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s1_2d, s2_2d)
+            C3 = proj_o_2d[0]*s1_2d[1] + proj_o_2d[1]*s2_2d[0] + s1_2d[0]*s2_2d[1] - \
+                proj_o_2d[0]*s2_2d[1] - proj_o_2d[1]*s1_2d[0] - s2_2d[0]*s1_2d[1]
+            
+            Cs = gs.ti_vec3(C1, C2, C3)
+                
+            # Compare sign of the cofactors with the determinant
+            scs = gs.ti_ivec3(0, 0, 0)
+            for i in range(3):
+                scs[i] = self.func_compare_sign(Cs[i], m_max)
+            sc1, sc2, sc3 = scs[0], scs[1], scs[2]
+    
+            if (sc1 and sc2 and sc3):
+                # If all barycentric coordinates are positive,
+                # the origin is inside the 2-simplex (triangle)
+                _lambda[0] = C1 / m_max
+                _lambda[1] = C2 / m_max
+                _lambda[2] = C3 / m_max
+                _lambda[3] = 0.0
+                flag = 1
+
+        return _lambda, flag
+    
+    @ti.func
+    def func_simple_gjk_subdistance_1d(self, i_b, i_s1, i_s2):
         
         _lambda = gs.ti_vec4(0, 0, 0, 0)
 
@@ -1293,17 +1504,17 @@ class GJKEPA:
 
         # Sanity check: the first and the last edges in the horizon
         # should be connected to each other for a closed loop.
-        if flag == 0:
-            face_idx_0 = self.polytope_horizon_data[i_b, 0].face_idx
-            edge_idx_0 = self.polytope_horizon_data[i_b, 0].edge_idx
-            face_idx_1 = self.polytope_horizon_data[i_b, self.polytope[i_b].horizon_nedges - 1].face_idx
-            edge_idx_1 = self.polytope_horizon_data[i_b, self.polytope[i_b].horizon_nedges - 1].edge_idx
-            beg_vert_idx = self.polytope_faces[i_b, face_idx_0].verts_idx[edge_idx_0]
-            end_vert_idx = self.polytope_faces[i_b, face_idx_1].verts_idx[(edge_idx_1 + 1) % 3]
+        # if flag == 0:
+        #     face_idx_0 = self.polytope_horizon_data[i_b, 0].face_idx
+        #     edge_idx_0 = self.polytope_horizon_data[i_b, 0].edge_idx
+        #     face_idx_1 = self.polytope_horizon_data[i_b, self.polytope[i_b].horizon_nedges - 1].face_idx
+        #     edge_idx_1 = self.polytope_horizon_data[i_b, self.polytope[i_b].horizon_nedges - 1].edge_idx
+        #     beg_vert_idx = self.polytope_faces[i_b, face_idx_0].verts_idx[edge_idx_0]
+        #     end_vert_idx = self.polytope_faces[i_b, face_idx_1].verts_idx[(edge_idx_1 + 1) % 3]
             
-            if beg_vert_idx != end_vert_idx:
-                # print("Horizon edges do not form a closed loop :", beg_vert_idx, end_vert_idx)
-                flag = 1
+        #     if beg_vert_idx != end_vert_idx:
+        #         # print("Horizon edges do not form a closed loop :", beg_vert_idx, end_vert_idx)
+        #         flag = 1
 
         return flag
     
@@ -1317,15 +1528,15 @@ class GJKEPA:
 
         flag = 0
         # Sanity check: the edges should form a closed loop
-        if horizon_nedges > 0:
-            prev_i_f = self.polytope_horizon_data[i_b, horizon_nedges - 1].face_idx
-            prev_i_e = self.polytope_horizon_data[i_b, horizon_nedges - 1].edge_idx
+        # if horizon_nedges > 0:
+        #     prev_i_f = self.polytope_horizon_data[i_b, horizon_nedges - 1].face_idx
+        #     prev_i_e = self.polytope_horizon_data[i_b, horizon_nedges - 1].edge_idx
 
-            curr_beg_vert_idx = self.polytope_faces[i_b, i_f].verts_idx[i_e]
-            prev_end_vert_idx = self.polytope_faces[i_b, prev_i_f].verts_idx[(prev_i_e + 1) % 3]
-            if curr_beg_vert_idx != prev_end_vert_idx:
-                # print("Horizon edges do not form a closed loop while add :", curr_beg_vert_idx, prev_end_vert_idx)
-                flag = 1
+        #     curr_beg_vert_idx = self.polytope_faces[i_b, i_f].verts_idx[i_e]
+        #     prev_end_vert_idx = self.polytope_faces[i_b, prev_i_f].verts_idx[(prev_i_e + 1) % 3]
+        #     if curr_beg_vert_idx != prev_end_vert_idx:
+        #         # print("Horizon edges do not form a closed loop while add :", curr_beg_vert_idx, prev_end_vert_idx)
+        #         flag = 1
         return flag
 
     @ti.func
@@ -1726,8 +1937,17 @@ class GJKEPA:
             self.polytope_verts[i_b, i_v2].mink,
             self.polytope_verts[i_b, i_v1].mink
         )
-        # print("project origin to plane result:", ret)
-        # print("Face normal:", self.polytope_faces[i_b, n].normal)
+        print("project origin to plane result:", ret)
+        print("Face verts 1: ", f"{self.polytope_verts[i_b, i_v1].mink.x:.20g}",
+              f"{self.polytope_verts[i_b, i_v1].mink.y:.20g}", 
+              f"{self.polytope_verts[i_b, i_v1].mink.z:.20g}")
+        print("Face verts 2: ", f"{self.polytope_verts[i_b, i_v2].mink.x:.20g}",
+                f"{self.polytope_verts[i_b, i_v2].mink.y:.20g}", 
+                f"{self.polytope_verts[i_b, i_v2].mink.z:.20g}")
+        print("Face verts 3: ", f"{self.polytope_verts[i_b, i_v3].mink.x:.20g}",
+                f"{self.polytope_verts[i_b, i_v3].mink.y:.20g}", 
+                f"{self.polytope_verts[i_b, i_v3].mink.z:.20g}")
+        print("Face normal:", self.polytope_faces[i_b, n].normal)
         if not ret:
             normal = self.polytope_faces[i_b, n].normal
             self.polytope_faces[i_b, n].dist2 = normal.dot(normal)
@@ -2197,6 +2417,8 @@ class GJKEPA:
         capule_radius = self._solver.geoms_info[i_g].data[0]
         capule_halflength = 0.5 * self._solver.geoms_info[i_g].data[1]
         capule_endpoint_side = ti.math.sign(direction.dot(capsule_axis))
+        if capule_endpoint_side == 0.0:
+            capule_endpoint_side = 1.0
         capule_endpoint = capule_center + capule_halflength * capule_endpoint_side * capsule_axis
         return capule_endpoint + direction * capule_radius
 
@@ -2232,13 +2454,17 @@ class GJKEPA:
     def support_box(self, direction, i_g, i_b):
         g_state = self._solver.geoms_state[i_g, i_b]
         d_box = gu.ti_transform_by_quat(direction, gu.ti_inv_quat(g_state.quat))
+        d_box_sign = ti.math.sign(d_box)
+        for i in range(3):
+            if d_box_sign[i] == 0.0:
+                d_box_sign[i] = 1.0
 
         vid = (d_box[0] > 0) * 4 + (d_box[1] > 0) * 2 + (d_box[2] > 0) * 1
         v_ = ti.Vector(
             [
-                ti.math.sign(d_box[0]) * self._solver.geoms_info[i_g].data[0] * 0.5,
-                ti.math.sign(d_box[1]) * self._solver.geoms_info[i_g].data[1] * 0.5,
-                ti.math.sign(d_box[2]) * self._solver.geoms_info[i_g].data[2] * 0.5,
+                d_box_sign[0] * self._solver.geoms_info[i_g].data[0] * 0.5,
+                d_box_sign[1] * self._solver.geoms_info[i_g].data[1] * 0.5,
+                d_box_sign[2] * self._solver.geoms_info[i_g].data[2] * 0.5,
             ],
             dt=gs.ti_float,
         )
@@ -2267,10 +2493,11 @@ class GJKEPA:
         
         v = self._solver.verts_info[imax].init_pos
         vid = imax
-        print("Support mesh dir: ", f"{direction[0]:.20g}", f"{direction[1]:.20g}", f"{direction[2]:.20g}")
+        print("Support mesh dir: ", f"{d_mesh[0]:.20g}", f"{d_mesh[1]:.20g}", f"{d_mesh[2]:.20g}")
         print("Support mesh vertex: ", f"{v[0]:.20g}", f"{v[1]:.20g}", f"{v[2]:.20g}")
         
         v_ = gu.ti_transform_by_trans_quat(v, g_state.pos, g_state.quat)
+        print("Support mesh vertex (global):", f"{v_[0]:.20g}", f"{v_[1]:.20g}", f"{v_[2]:.20g}")
         return v_, vid
 
     @ti.func

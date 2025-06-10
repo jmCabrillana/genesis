@@ -1,4 +1,4 @@
-<mujoco model="tet_ball">
+<mujoco model="two_tet">
   <compiler angle="degree"/>
   <option gravity="0 0 -9.8100000000000005"/>
   <default>
@@ -14,24 +14,25 @@
     <texture builtin="checker" height="100" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d" width="100"/>
     <material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
     <mesh name="tet" file="tet.obj"/>
+    <mesh name="small_tet" file="tet.obj" scale="0.1 0.1 0.1"/>
   </asset>
 
   <worldbody>
     <geom name="tet1" contype="1" conaffinity="1" pos="0 0 0" type="mesh" rgba="0 0 1 1" mesh="tet"/>
     
-    <body name="sphere1" pos="0 0 1.2">
+    <body name="tet2" pos="0 0 1.5">
       <joint name="root1" class="/" type="free"/>
-      <geom name="seg1_geom" class="/" type="sphere" size="0.1"/>
+      <geom name="tet2" contype="1" conaffinity="1" pos="0 0 0" type="mesh" mesh="small_tet"/>
     </body>
 
-    <body name="sphere2" pos="0.3 0 1.2">
+    <body name="tet3" pos="0.5 0 1.5">
       <joint name="root2" class="/" type="free"/>
-      <geom name="seg2_geom" class="/" type="sphere" size="0.1"/>
+      <geom name="tet3" contype="1" conaffinity="1" pos="0 0 0" type="mesh" mesh="small_tet"/>
     </body>
 
-    <body name="sphere3" pos="0.3 0.3 1.2">
+    <body name="tet4" pos="0.1 0 2.0">
       <joint name="root3" class="/" type="free"/>
-      <geom name="seg3_geom" class="/" type="sphere" size="0.1"/>
+      <geom name="tet4" contype="1" conaffinity="1" pos="0 0 0" type="mesh" mesh="small_tet"/>
     </body>
   </worldbody>
 </mujoco>
