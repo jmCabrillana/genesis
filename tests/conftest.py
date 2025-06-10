@@ -140,6 +140,17 @@ def adjacent_collision(request):
         adjacent_collision = False
     return adjacent_collision
 
+@pytest.fixture
+def gjk_collision(request):
+    gjk_collision = None
+    for mark in request.node.iter_markers("gjk_collision"):
+        if mark.args:
+            if gjk_collision is not None:
+                pytest.fail("'gjk_collision' can only be specified once.")
+            (gjk_collision,) = mark.args
+    if gjk_collision is None:
+        gjk_collision = False
+    return gjk_collision
 
 @pytest.fixture
 def multi_contact(request):
@@ -174,10 +185,10 @@ def mj_sim(xml_path, gs_solver, gs_integrator, multi_contact, adjacent_collision
 
 @pytest.fixture
 def gs_sim(
-    xml_path, gs_solver, gs_integrator, multi_contact, mujoco_compatibility, adjacent_collision, show_viewer, mj_sim
+    xml_path, gs_solver, gs_integrator, multi_contact, mujoco_compatibility, adjacent_collision, gjk_collision, show_viewer, mj_sim
 ):
     return build_genesis_sim(
-        xml_path, gs_solver, gs_integrator, multi_contact, mujoco_compatibility, adjacent_collision, show_viewer, mj_sim
+        xml_path, gs_solver, gs_integrator, multi_contact, mujoco_compatibility, adjacent_collision, gjk_collision, show_viewer, mj_sim
     )
 
 

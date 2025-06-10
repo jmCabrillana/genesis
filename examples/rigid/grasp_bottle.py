@@ -11,7 +11,7 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(backend=gs.gpu)
+    gs.init(backend=gs.cpu)
 
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
@@ -25,7 +25,8 @@ def main():
         viewer_options=viewer_options,
         rigid_options=gs.options.RigidOptions(
             dt=0.01,
-            use_gjk_collision=False,
+            use_gjk_collision=True,
+            enable_multi_contact=False,
         ),
         show_viewer=args.vis,
     )
@@ -42,7 +43,7 @@ def main():
             pos=(0.65, 0.0, 0.036),
             euler=(0, 90, 0),
         ),
-        #visualize_contact=True
+        visualize_contact=True
     )
     franka = scene.add_entity(
         gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
