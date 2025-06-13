@@ -960,7 +960,7 @@ class Collider:
 
     @ti.kernel
     def _func_narrow_phase(self):
-        #@TODO: remove [use_gjk] and make it a compile time constant
+        # @TODO: remove [use_gjk] and make it a compile time constant
         """
         NOTE: for a single non-batched scene with a lot of collisioin pairs, it will be faster if we also parallelize over `self.n_collision_pairs`.
         However, parallelize over both B and collision_pairs (instead of only over B) leads to significantly slow performance for batched scene.
@@ -1439,33 +1439,33 @@ class Collider:
 
     @ti.func
     def _func_gjk_epa_mw(self, i_ga, i_gb, i_b):
-        '''
+        """
         GJK-EPA algorithm for collision detection between two convex geometries.
         (MJWarp-based implementation)
-        '''
+        """
         if self._solver.geoms_info[i_ga].type > self._solver.geoms_info[i_gb].type:
             i_gb, i_ga = i_ga, i_gb
-            
+
         if (
             self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.PLANE
             and self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
         ):
             self._func_plane_box_multi_contact(i_ga, i_gb, i_b)
         else:
-            margin = 0      # @TODO: margin for geoms?
-            
-            self._gjk_epa_mw.func_gjk_contact(i_ga, i_gb, i_b)  
+            margin = 0  # @TODO: margin for geoms?
+
+            self._gjk_epa_mw.func_gjk_contact(i_ga, i_gb, i_b)
             # print("GJK Done")
             # print("GJK simplex 0: ", self._gjk_epa.gjk_simplex[i_b, 0])
             # print("GJK simplex 1: ", self._gjk_epa.gjk_simplex[i_b, 1])
             # print("GJK simplex 2: ", self._gjk_epa.gjk_simplex[i_b, 2])
             # print("GJK simplex 3: ", self._gjk_epa.gjk_simplex[i_b, 3])
             # print("GJK normal: ", self._gjk_epa.gjk_normal[i_b])
-            
+
             self._gjk_epa_mw.func_epa_contact(i_ga, i_gb, i_b)
             # invert normal, so that the normal points toward [i_ga] (starting from [i_gb])
             self._gjk_epa_mw.epa_normal[i_b] = -self._gjk_epa_mw.epa_normal[i_b]
-            
+
             # print("EPA Done")
             # print("EPA Depth: ", self._gjk_epa.epa_depth[i_b])
             # print("EPA Normal: ", self._gjk_epa.epa_normal[i_b])
@@ -1473,20 +1473,20 @@ class Collider:
             # gb_pos = self._solver.geoms_state[i_gb, i_b].pos
             # print("ga_pos: ", ga_pos)
             # print("gb_pos: ", gb_pos)
-            
+
             depth = self._gjk_epa_mw.epa_depth[i_b]
             normal = self._gjk_epa_mw.epa_normal[i_b]
             dist = -depth
 
-            if (dist - margin) < 0.0: # and depth == depth:     @TODO: second condition?
+            if (dist - margin) < 0.0:  # and depth == depth:     @TODO: second condition?
                 self._gjk_epa_mw.func_multiple_contacts(i_ga, i_gb, i_b)
                 count = self._gjk_epa_mw.mc_contact_count[i_b]
                 first_point = self._gjk_epa_mw.mc_contact_points[i_b, 0]
-                
+
                 # print("Multiple contacts found")
                 # print("Contact count: ", count)
                 # print("First contact point: ", first_point)
-                
+
                 for i in range(count):
                     contact_pos = self._gjk_epa_mw.mc_contact_points[i_b, i]
                     penetration = depth
@@ -1494,38 +1494,31 @@ class Collider:
 
     @ti.func
     def _func_gjk_epa_mj(self, i_ga, i_gb, i_b):
-        '''
+        """
         GJK-EPA algorithm for collision detection between two convex geometries.
         (Mujoco-based implementation)
-        '''
+        """
         if self._solver.geoms_info[i_ga].type > self._solver.geoms_info[i_gb].type:
             i_gb, i_ga = i_ga, i_gb
-        
-        print("")
-        print("[Genesis GJK-EPA] Pair: ", i_ga, i_gb, "Batch: ", i_b)
+
+        multi_contact = ti.static(self._solver._enable_multi_contact)
+
         if (
             self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.PLANE
             and self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
         ):
             self._func_plane_box_multi_contact(i_ga, i_gb, i_b)
         else:
-            #print("=== [GJK-EPA] Pair: ", i_ga, i_gb, "Batch: ", i_b)
-            
-            margin = 0      # @TODO: margin for geoms?
-            
-            print("GJK started")
-            collided = self._gjk_epa_mj.func_gjk(i_ga, i_gb, i_b)  
+            margin = 0  # @TODO: margin for geoms?
+
+            collided = self._gjk_epa_mj.func_gjk(i_ga, i_gb, i_b)
             distance = self._gjk_epa_mj.distance[i_b]
             nsimplex = self._gjk_epa_mj.gjk_nsimplex[i_b]
-            print("GJK Done")
-            print("GJK Collision: ", collided)
-            print("GJK Nsimplex: ", nsimplex)
-            print(f"GJK Distance: {distance:.20g}")
 
             if collided and nsimplex > 1:
                 # Assume touching
                 self._gjk_epa_mj.distance[i_b] = 0
-                
+
                 # Initialize polytope
                 self._gjk_epa_mj.polytope[i_b].nverts = 0
                 self._gjk_epa_mj.polytope[i_b].nfaces = 0
@@ -1537,34 +1530,42 @@ class Collider:
                     polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_2d(i_ga, i_gb, i_b)
                 elif nsimplex == 4:
                     polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_4d(i_ga, i_gb, i_b)
-                
+
                 # Polytope 3D could be used as a fallback for 2D and 4D cases, but it is not necessary
                 if nsimplex == 3 or (polytope_flag == EPA_P2_FALLBACK3 or polytope_flag == EPA_P4_FALLBACK3):
                     polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
-                
-                # print("EPA Nsimplex: ", nsimplex)
-                # print("EPA Polytope Flag: ", polytope_flag)
 
                 # Run EPA from the polytope
                 if polytope_flag == 0:
-                    self._gjk_epa_mj.func_epa(i_ga, i_gb, i_b)
-                    print("EPA Done.")
+                    i_f = self._gjk_epa_mj.func_epa(i_ga, i_gb, i_b)
                     distance = self._gjk_epa_mj.distance[i_b]
-                    print(f"EPA Distance: {distance:.20g}")
                     normal = self._gjk_epa_mj.normal[i_b]
-                    print("EPA Normal: ", f"{normal[0]:.20g}, {normal[1]:.20g}, {normal[2]:.20g}")
 
-                    if distance < 0:
-                        # invert normal, so that the normal points toward [i_ga] (starting from [i_gb])
-                        normal = -normal
+                    if self._gjk_epa_mj.max_contacts_per_pair > 1 and i_f != -1:
+                        # Detect multiple contacts if both geometries are either box or mesh
+                        is_ga_box_mesh = (
+                            self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.BOX
+                            or self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.MESH
+                        )
+                        is_gb_box_mesh = (
+                            self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
+                            or self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.MESH
+                        )
+                        if is_ga_box_mesh and is_gb_box_mesh and multi_contact:
+                            self._gjk_epa_mj.func_multi_contact(i_ga, i_gb, i_b, i_f)
 
-                        penetration = -distance
-                        witness_a = self._gjk_epa_mj.witness[i_b, 0].point_obj1
-                        witness_b = self._gjk_epa_mj.witness[i_b, 0].point_obj2
+                    # invert normal, so that the normal points toward [i_ga] (starting from [i_gb])
+                    # normal = -normal
+                    penetration = -distance
+
+                    for i in range(self._gjk_epa_mj.num_witness[i_b]):
+                        witness_a = self._gjk_epa_mj.witness[i_b, i].point_obj1
+                        witness_b = self._gjk_epa_mj.witness[i_b, i].point_obj2
                         contact_pos = 0.5 * (witness_a + witness_b)
-                        #print("Contact pos: ", contact_pos)
-                        self._func_add_contact(i_ga, i_gb, normal, contact_pos, penetration, i_b)
+                        # Normal should point from [i_ga] to [i_gb]
+                        normal = self._gjk_epa_mj.func_safe_normalize(witness_b - witness_a)
 
+                        self._func_add_contact(i_ga, i_gb, normal, contact_pos, penetration, i_b)
 
     @ti.func
     def _func_rotate_frame(self, i_g, contact_pos, qrot, i_b):

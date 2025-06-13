@@ -237,7 +237,7 @@ class RigidOptions(Options):
     # Experimental options mainly intended for debug purpose and unit tests
     enable_multi_contact: bool = True
     enable_mujoco_compatibility: bool = False
-    
+
     # GJK collision detection
     use_gjk_collision: bool = False
 
