@@ -1503,19 +1503,112 @@ class Collider:
 
         multi_contact = ti.static(self._solver._enable_multi_contact)
 
-        if (
+        if multi_contact and (
             self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.PLANE
             and self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
         ):
             self._func_plane_box_multi_contact(i_ga, i_gb, i_b)
         else:
-            margin = 0  # @TODO: margin for geoms?
+            # tolerance = self._func_compute_tolerance(i_ga, i_gb, i_b)
 
-            collided = self._gjk_epa_mj.func_gjk(i_ga, i_gb, i_b)
+            # is_col_0 = False
+            # penetration_0 = gs.ti_float(0.0)
+            # normal_0 = ti.Vector.zero(gs.ti_float, 3)
+            # contact_pos_0 = ti.Vector.zero(gs.ti_float, 3)
+
+            # is_col = False
+            # penetration = gs.ti_float(0.0)
+            # normal = ti.Vector.zero(gs.ti_float, 3)
+            # contact_pos = ti.Vector.zero(gs.ti_float, 3)
+
+            # n_con = gs.ti_int(0)
+            # axis_0 = ti.Vector.zero(gs.ti_float, 3)
+            # axis_1 = ti.Vector.zero(gs.ti_float, 3)
+            # qrot = ti.Vector.zero(gs.ti_float, 4)
+
+            # ga_state = self._solver.geoms_state[i_ga, i_b]
+            # gb_state = self._solver.geoms_state[i_gb, i_b]
+            # ga_pos, ga_quat = ga_state.pos, ga_state.quat
+            # gb_pos, gb_quat = gb_state.pos, gb_state.quat
+
+            # for i_detection in range(5):
+            #     if multi_contact and is_col_0:
+            #         # Perturbation axis must not be aligned with the principal axes of inertia the geometry,
+            #         # otherwise it would be more sensitive to ill-conditionning.
+            #         axis = (2 * (i_detection % 2) - 1) * axis_0 + (1 - 2 * ((i_detection // 2) % 2)) * axis_1
+            #         qrot = gu.ti_rotvec_to_quat(self._mc_perturbation * axis)
+            #         self._func_rotate_frame(i_ga, contact_pos_0, qrot, i_b)
+            #         self._func_rotate_frame(i_gb, contact_pos_0, gu.ti_inv_quat(qrot), i_b)
+
+
+
+            # @TODO: margin for geoms?
+            self._gjk_epa_mj.clear_cache(i_b)
+
+            num_gjk_iter = 1
+
+            # Number of maximum contacts that we can find depending on the geometry types.
+            ga_type = self._solver.geoms_info[i_ga].type
+            gb_type = self._solver.geoms_info[i_gb].type
+            is_ga_box_mesh = (ga_type == gs.GEOM_TYPE.BOX or ga_type == gs.GEOM_TYPE.MESH)
+            is_gb_box_mesh = (gb_type == gs.GEOM_TYPE.BOX or gb_type == gs.GEOM_TYPE.MESH)
+
+            num_max_contacts = 1
+            if multi_contact and is_ga_box_mesh and is_gb_box_mesh:
+                # Not precise, just approximate.
+                num_max_contacts = 4
+
+            # If any one of the geometries is a sphere or capsule,
+            # which are sphere-swept primitives, we can shrink them
+            # to a point or line to detect shallow penetration faster.
+            is_ga_sphere = (ga_type == gs.GEOM_TYPE.SPHERE or ga_type == gs.GEOM_TYPE.CAPSULE)
+            is_gb_sphere = (gb_type == gs.GEOM_TYPE.SPHERE or gb_type == gs.GEOM_TYPE.CAPSULE)
+            
+            shrink_sphere = (is_ga_sphere or is_gb_sphere)
+            num_gjk_iter = 2 if shrink_sphere else 1
+
+            # Run GJK.
+            for i_gjk in range(num_gjk_iter):
+                distance = self._gjk_epa_mj.func_gjk(i_ga, i_gb, i_b, shrink_sphere)
+
+                if shrink_sphere:
+                    # If we shrinked the sphere and capsule to point and line and 
+                    # the distance is larger than the collision epsilon, it means
+                    # a shallow penetration. Thus we subtract the radius of the sphere
+                    # and the capsule to get the actual distance. If the distance is
+                    # smaller than the collision epsilon, it means a deep penetration,
+                    # which requires the default GJK handling.
+                    if distance > self._gjk_epa_mj.collision_eps:
+                        radius_a, radius_b = 0.0, 0.0
+                        if is_ga_sphere:
+                            radius_a = self._solver.geoms_info[i_ga].data[0]
+                        if is_gb_sphere:
+                            radius_b = self._solver.geoms_info[i_gb].data[0]
+
+                        wa = self._gjk_epa_mj.witness[i_b, 0].point_obj1
+                        wb = self._gjk_epa_mj.witness[i_b, 0].point_obj2
+                        n = self._gjk_epa_mj.func_safe_normalize(wb - wa)
+
+                        self._gjk_epa_mj.distance[i_b] = distance - (radius_a + radius_b)
+                        self._gjk_epa_mj.witness[i_b, 0].point_obj1 = wa + (radius_a * n)
+                        self._gjk_epa_mj.witness[i_b, 0].point_obj2 = wb - (radius_b * n)
+
+                        break
+
+                # Only try shrinking the sphere once
+                shrink_sphere = False
+            
             distance = self._gjk_epa_mj.distance[i_b]
             nsimplex = self._gjk_epa_mj.gjk_nsimplex[i_b]
+            collided = distance < self._gjk_epa_mj.collision_eps
 
-            if collided and nsimplex > 1:
+            # To run EPA, we need following conditions:
+            # 1. We did not find min. distance with shrink_sphere flag
+            # 2. We have a valid GJK simplex (nsimplex > 0)
+            # 3. We have a collision (distance < collision_epsilon)
+            do_epa = (not shrink_sphere) and collided and nsimplex > 0
+
+            if do_epa:
                 # Assume touching
                 self._gjk_epa_mj.distance[i_b] = 0
 
@@ -1525,6 +1618,7 @@ class Collider:
                 self._gjk_epa_mj.polytope[i_b].nfaces_map = 0
                 self._gjk_epa_mj.polytope[i_b].horizon_nedges = 0
 
+                # Construct the initial polytope from the GJK simplex
                 polytope_flag = 0
                 if nsimplex == 2:
                     polytope_flag = self._gjk_epa_mj.func_epa_init_polytope_2d(i_ga, i_gb, i_b)
@@ -1539,33 +1633,24 @@ class Collider:
                 if polytope_flag == 0:
                     i_f = self._gjk_epa_mj.func_epa(i_ga, i_gb, i_b)
                     distance = self._gjk_epa_mj.distance[i_b]
-                    normal = self._gjk_epa_mj.normal[i_b]
+                    
+                    if num_max_contacts > 1 and i_f != -1:
+                        # Detect multiple contacts
+                        self._gjk_epa_mj.func_multi_contact(i_ga, i_gb, i_b, i_f)
 
-                    if self._gjk_epa_mj.max_contacts_per_pair > 1 and i_f != -1:
-                        # Detect multiple contacts if both geometries are either box or mesh
-                        is_ga_box_mesh = (
-                            self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.BOX
-                            or self._solver.geoms_info[i_ga].type == gs.GEOM_TYPE.MESH
-                        )
-                        is_gb_box_mesh = (
-                            self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
-                            or self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.MESH
-                        )
-                        if is_ga_box_mesh and is_gb_box_mesh and multi_contact:
-                            self._gjk_epa_mj.func_multi_contact(i_ga, i_gb, i_b, i_f)
+            # Insert contact points if we have a collision
+            distance = self._gjk_epa_mj.distance[i_b]
+            penetration = -distance
 
-                    # invert normal, so that the normal points toward [i_ga] (starting from [i_gb])
-                    # normal = -normal
-                    penetration = -distance
+            if distance < 0:
+                for i in range(self._gjk_epa_mj.num_witness[i_b]):
+                    witness_a = self._gjk_epa_mj.witness[i_b, i].point_obj1
+                    witness_b = self._gjk_epa_mj.witness[i_b, i].point_obj2
+                    contact_pos = 0.5 * (witness_a + witness_b)
+                    # Normal should point from [i_ga] to [i_gb]
+                    normal = self._gjk_epa_mj.func_safe_normalize(witness_b - witness_a)
 
-                    for i in range(self._gjk_epa_mj.num_witness[i_b]):
-                        witness_a = self._gjk_epa_mj.witness[i_b, i].point_obj1
-                        witness_b = self._gjk_epa_mj.witness[i_b, i].point_obj2
-                        contact_pos = 0.5 * (witness_a + witness_b)
-                        # Normal should point from [i_ga] to [i_gb]
-                        normal = self._gjk_epa_mj.func_safe_normalize(witness_b - witness_a)
-
-                        self._func_add_contact(i_ga, i_gb, normal, contact_pos, penetration, i_b)
+                    self._func_add_contact(i_ga, i_gb, normal, contact_pos, penetration, i_b)  
 
     @ti.func
     def _func_rotate_frame(self, i_g, contact_pos, qrot, i_b):

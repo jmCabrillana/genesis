@@ -6,7 +6,9 @@ import genesis as gs
 import genesis.utils.geom as gu
 
 from .support_field_decomp import SupportField
+
 # @TODO: type checking for float, int, etc.
+
 
 @ti.data_oriented
 class GJKEPA:
@@ -15,52 +17,56 @@ class GJKEPA:
         self._max_contact_pairs = rigid_solver._max_collision_pairs
         self._B = rigid_solver._B
         self._para_level = rigid_solver._para_level
-        
-        #@TODO: remove [FLOAT_MAX]
+
+        # @TODO: remove [FLOAT_MAX]
         self.FLOAT_MAX = float(1e30)
-        #@TODO: make this a parameter
+        # @TODO: make this a parameter
         self.gjk_iterations = 50
         self.epa_depth_extension = 0.1
         self.epa_exact_neg_distance = False
         self.epa_iterations = 12
-        
+
         ### constants
         self.EPS_BEST_COUNT = 12
         self.MULTI_CONTACT_COUNT = 4
         self.MULTI_POLYGON_COUNT = 8
         self.MULTI_TILT_ANGLE = 1.0
         self.TRIS_DIM = 3 * self.EPS_BEST_COUNT
-        
+
         ### taichi fields
         self.gjk_simplex = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, 4))
         self.gjk_normal = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B,))
         self.gjk_plane = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, 4))
-        
+
         self.epa_veci1 = ti.Vector.field(n=6, dtype=gs.ti_int, shape=())
         self.epa_veci2 = ti.Vector.field(n=6, dtype=gs.ti_int, shape=())
         self.epa_veci1[None] = ti.Vector([0, 0, 0, 1, 1, 2], dt=gs.ti_int)
         self.epa_veci2[None] = ti.Vector([1, 2, 3, 2, 3, 3], dt=gs.ti_int)
-        
+
         self.epa_tris = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, self.TRIS_DIM * 2))
-        self.epa_p = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, self.EPS_BEST_COUNT))          # supporting points for each triangle
-        self.epa_dists = ti.Vector.field(n=self.EPS_BEST_COUNT * 3, dtype=gs.ti_float, shape=(self._B,))    # distance to the origin for candidate triangles
-        
+        self.epa_p = ti.Vector.field(
+            n=3, dtype=gs.ti_float, shape=(self._B, self.EPS_BEST_COUNT)
+        )  # supporting points for each triangle
+        self.epa_dists = ti.Vector.field(
+            n=self.EPS_BEST_COUNT * 3, dtype=gs.ti_float, shape=(self._B,)
+        )  # distance to the origin for candidate triangles
+
         self.epa_depth = ti.field(dtype=gs.ti_float, shape=(self._B,))  # depth of the contact point
         self.epa_normal = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B,))  # normal of the contact point
-        
+
         self.mc_contact_points = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, self.MULTI_CONTACT_COUNT))
         self.mc_contact_count = ti.field(dtype=gs.ti_int, shape=(self._B,))  # number of contact points for each body
         self.mc_v1 = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, self.MULTI_POLYGON_COUNT))
         self.mc_v2 = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, self.MULTI_POLYGON_COUNT))
         self.mc_out = ti.Vector.field(n=3, dtype=gs.ti_float, shape=(self._B, 4))
-        
+
         self.support_field = SupportField(rigid_solver)
-        
+
     @ti.func
     def func_gjk_contact(self, i_ga, i_gb, i_b):
-        '''
+        """
         GJK algorithm to check collision between two convex geometries.
-        '''
+        """
         dir = ti.math.vec3(0, 0, 1)
         dir_n = -dir
         depth = self.FLOAT_MAX
@@ -77,10 +83,10 @@ class GJKEPA:
             normal = dir_n
 
         sd = simplex0 - simplex1
-        dir = self.gjk_orthonormal(sd)        # find a vector that lies in the plane orthogonal to sd
+        dir = self.gjk_orthonormal(sd)  # find a vector that lies in the plane orthogonal to sd
 
         dist_max, simplex3 = self.compute_support(dir, i_ga, i_gb, i_b)
-        
+
         # Initialize a 2-simplex with simplex[2]==simplex[1]. This ensures the
         # correct winding order for face normals defined below. Face 0 and face 3
         # are degenerate, and face 1 and 2 have opposing normals.
@@ -88,48 +94,44 @@ class GJKEPA:
         self.gjk_simplex[i_b, 1] = simplex1
         self.gjk_simplex[i_b, 2] = simplex1  # simplex[2] == simplex[1]
         self.gjk_simplex[i_b, 3] = simplex3
-        
+
         if dist_max < depth:
             depth = dist_max
             normal = dir
         if dist_min < depth:
             depth = dist_min
             normal = dir_n
-        
+
         for _ in range(self.gjk_iterations):
             # winding orders: plane[0] ccw, plane[1] cw, plane[2] ccw, plane[3] cw
             self.gjk_plane[i_b, 0] = ti.math.cross(
-                self.gjk_simplex[i_b, 3] - self.gjk_simplex[i_b, 2],
-                self.gjk_simplex[i_b, 1] - self.gjk_simplex[i_b, 2]
+                self.gjk_simplex[i_b, 3] - self.gjk_simplex[i_b, 2], self.gjk_simplex[i_b, 1] - self.gjk_simplex[i_b, 2]
             )
             self.gjk_plane[i_b, 1] = ti.math.cross(
-                self.gjk_simplex[i_b, 3] - self.gjk_simplex[i_b, 0],
-                self.gjk_simplex[i_b, 2] - self.gjk_simplex[i_b, 0]
+                self.gjk_simplex[i_b, 3] - self.gjk_simplex[i_b, 0], self.gjk_simplex[i_b, 2] - self.gjk_simplex[i_b, 0]
             )
             self.gjk_plane[i_b, 2] = ti.math.cross(
-                self.gjk_simplex[i_b, 3] - self.gjk_simplex[i_b, 1],
-                self.gjk_simplex[i_b, 0] - self.gjk_simplex[i_b, 1]
+                self.gjk_simplex[i_b, 3] - self.gjk_simplex[i_b, 1], self.gjk_simplex[i_b, 0] - self.gjk_simplex[i_b, 1]
             )
             self.gjk_plane[i_b, 3] = ti.math.cross(
-                self.gjk_simplex[i_b, 2] - self.gjk_simplex[i_b, 0],
-                self.gjk_simplex[i_b, 1] - self.gjk_simplex[i_b, 0]
+                self.gjk_simplex[i_b, 2] - self.gjk_simplex[i_b, 0], self.gjk_simplex[i_b, 1] - self.gjk_simplex[i_b, 0]
             )
             plane0, p0 = self.gjk_normalize(self.gjk_plane[i_b, 0])
             plane1, p1 = self.gjk_normalize(self.gjk_plane[i_b, 1])
             plane2, p2 = self.gjk_normalize(self.gjk_plane[i_b, 2])
             plane3, p3 = self.gjk_normalize(self.gjk_plane[i_b, 3])
-            
+
             self.gjk_plane[i_b, 0] = plane0
             self.gjk_plane[i_b, 1] = plane1
             self.gjk_plane[i_b, 2] = plane2
             self.gjk_plane[i_b, 3] = plane3
-            
+
             # Compute distance of each face halfspace to the origin. If dplane<0, then the
             # origin is outside the halfspace. If dplane>0 then the origin is inside
             # the halfspace defined by the face plane.
             dplane = ti.math.vec4(0, 0, 0, 0)
             dplane.fill(self.FLOAT_MAX)
-            
+
             if p0:
                 dplane.x = ti.math.dot(plane0, self.gjk_simplex[i_b, 2])
             if p1:
@@ -152,11 +154,11 @@ class GJKEPA:
             iplane = self.gjk_plane[i_b, index]
             dist, simplex_i = self.compute_support(iplane, i_ga, i_gb, i_b)
             self.gjk_simplex[i_b, index] = simplex_i
-            
+
             if dist < depth:
                 depth = dist
                 normal = self.gjk_plane[i_b, index]
-                
+
             # preserve winding order of the simplex faces
             index1 = (index + 1) % 4
             index2 = (index + 2) % 4
@@ -168,19 +170,19 @@ class GJKEPA:
                 break  # objects are likely non-intersecting
 
         self.gjk_normal[i_b] = normal
-    
+
     @ti.func
     def func_epa_contact(self, i_ga, i_gb, i_b):
-        '''
+        """
         EPA algorithm to find exact collision depth and normal between two convex geometries.
-        
+
         @ simplex: 4x3 matrix with simplex vertices
         @ normal: initial normal vector, which is used to compute the support
-        '''
+        """
         normal = self.gjk_normal[i_b]
         # get the support, if depth < 0: objects do not intersect
         depth, _ = self.compute_support(normal, i_ga, i_gb, i_b)
-        
+
         if depth < -self.epa_depth_extension:
             # Objects are not intersecting, and we do not obtain the closest points as
             # specified by depth_extension.
@@ -217,23 +219,23 @@ class GJKEPA:
             simplex1 = self.gjk_simplex[i_b, 1]
             simplex2 = self.gjk_simplex[i_b, 2]
             simplex3 = self.gjk_simplex[i_b, 3]
-            
+
             self.epa_tris[i_b, 0] = simplex2
             self.epa_tris[i_b, 1] = simplex1
             self.epa_tris[i_b, 2] = simplex3
-            
+
             self.epa_tris[i_b, 3] = simplex0
             self.epa_tris[i_b, 4] = simplex2
             self.epa_tris[i_b, 5] = simplex3
-            
+
             self.epa_tris[i_b, 6] = simplex1
             self.epa_tris[i_b, 7] = simplex0
             self.epa_tris[i_b, 8] = simplex3
-            
+
             self.epa_tris[i_b, 9] = simplex0
             self.epa_tris[i_b, 10] = simplex1
             self.epa_tris[i_b, 11] = simplex2
-            
+
             # Calculate the total number of iterations to avoid nested loop
             # This is a hack to reduce compile time
             count = 4
@@ -252,7 +254,7 @@ class GJKEPA:
                 tris1 = self.epa_tris[i_b, Ti + 1]
                 tris2 = self.epa_tris[i_b, Ti + 2]
                 n = ti.math.cross(tris2 - tris0, tris1 - tris0)
-                
+
                 n, nf = self.gjk_normalize(n)
                 if not nf:
                     for j in range(3):
@@ -265,14 +267,14 @@ class GJKEPA:
                 if dist < depth:
                     depth = dist
                     normal = n
-                    
+
                 # iterate over edges and get distance using support point
                 for j in range(3):
                     pii = self.epa_p[i_b, i]
                     tqj = self.epa_tris[i_b, Ti + j]
                     tqj1 = self.epa_tris[i_b, Ti + ((j + 1) % 3)]
                     tqj2 = self.epa_tris[i_b, Ti + ((j + 2) % 3)]
-                    
+
                     if ti.static(self.epa_exact_neg_distance):
                         # obtain closest point between new triangle edge and origin
                         if (pii[0] != tqj[0]) or (pii[1] != tqj[1]) or (pii[2] != tqj[2]):
@@ -287,7 +289,7 @@ class GJKEPA:
                                 if dist2 < depth:
                                     depth = dist2
                                     normal = p0
-                          
+
                     plane = ti.math.cross(pii - tqj, tqj1 - tqj)
                     plane, pf = self.gjk_normalize(plane)
 
@@ -297,9 +299,7 @@ class GJKEPA:
                     else:
                         dd = self.FLOAT_MAX
 
-                    if (dd < 0 and depth >= 0) or (
-                        tqj2[0] == pii[0] and tqj2[1] == pii[1]  and tqj2[2] == pii[2]
-                    ):
+                    if (dd < 0 and depth >= 0) or (tqj2[0] == pii[0] and tqj2[1] == pii[1] and tqj2[2] == pii[2]):
                         self.epa_dists[i_b][i * 3 + j] = self.FLOAT_MAX
                     else:
                         self.epa_dists[i_b][i * 3 + j] = dd
@@ -313,12 +313,12 @@ class GJKEPA:
                     i = 0
                 else:
                     i += 1
-        
+
         self.epa_depth[i_b] = depth
         self.epa_normal[i_b] = normal
-    
+
     @ti.func
-    def epa_expand_polytope(self, i_b, count, prev_count):        
+    def epa_expand_polytope(self, i_b, count, prev_count):
         # expand polytope greedily
         for j in range(count):
             best = 0
@@ -327,18 +327,20 @@ class GJKEPA:
                 if self.epa_dists[i_b][i] < dd:
                     dd = self.epa_dists[i_b][i]
                     best = i
-               
+
             self.epa_dists[i_b][best] = 2 * self.FLOAT_MAX
 
             parent_index = best // 3
             child_index = best % 3
-            
+
             # fill in the new triangle at the next index
             # @TODO: This part is erroneous; we save the same triangle multiple times
             self.epa_tris[i_b, self.TRIS_DIM + j * 3 + 0] = self.epa_tris[i_b, parent_index * 3 + child_index]
-            self.epa_tris[i_b, self.TRIS_DIM + j * 3 + 1] = self.epa_tris[i_b, parent_index * 3 + ((child_index + 1) % 3)]
+            self.epa_tris[i_b, self.TRIS_DIM + j * 3 + 1] = self.epa_tris[
+                i_b, parent_index * 3 + ((child_index + 1) % 3)
+            ]
             self.epa_tris[i_b, self.TRIS_DIM + j * 3 + 2] = self.epa_p[i_b, parent_index]
-        
+
         for r in range(self.EPS_BEST_COUNT * 3):
             # swap triangles
             swap = self.epa_tris[i_b, self.TRIS_DIM + r]
@@ -347,7 +349,7 @@ class GJKEPA:
 
     @ti.func
     def func_multiple_contacts(self, i_ga, i_gb, i_b):
-        '''
+        """
         Calculates multiple contact points given the normal from EPA.
          1. Calculates the polygon on each shape by tiling the normal
             "MULTI_TILT_ANGLE" degrees in the orthogonal component of the normal.
@@ -361,10 +363,10 @@ class GJKEPA:
            directions are found. This can be modified to the extremes in the
            direction of eigenvectors of the variance of points of each polygon. If
            they do not intersect, the closest points of both polygons are found.
-        '''
+        """
         depth = self.epa_depth[i_b]
         normal = self.epa_normal[i_b]
-        
+
         contact_count = 0
         if depth >= -self.epa_depth_extension:
             dir = self.gjk_orthonormal(normal)
@@ -380,7 +382,7 @@ class GJKEPA:
             v1count = 0
             v2count = 0
             angle_ratio = 2.0 * ti.math.pi / float(self.MULTI_POLYGON_COUNT)
-            
+
             for i in range(self.MULTI_POLYGON_COUNT):
                 angle = angle_ratio * float(i)
                 axis = ti.math.cos(angle) * dir + ti.math.sin(angle) * dir2
@@ -408,42 +410,44 @@ class GJKEPA:
                     mat4 * normal[0] + mat5 * normal[1] + mat6 * normal[2],
                     mat8 * normal[0] + mat9 * normal[1] + mat10 * normal[2],
                 )
-                
-                _, p = self.gjk_support_geom(-n, i_ga, i_b)                 # since normal points toward [i_ga], should invert it to get contact point on [i_ga]
+
+                _, p = self.gjk_support_geom(
+                    -n, i_ga, i_b
+                )  # since normal points toward [i_ga], should invert it to get contact point on [i_ga]
                 self.mc_v1[i_b, v1count][0] = ti.math.dot(p, dir)
                 self.mc_v1[i_b, v1count][1] = ti.math.dot(p, dir2)
                 self.mc_v1[i_b, v1count][2] = ti.math.dot(p, normal)
 
                 if i == 0:
                     v1count += 1
-                elif self.any_different(self.mc_v1[i_b, v1count], self.mc_v1[i_b, v1count-1]):
+                elif self.any_different(self.mc_v1[i_b, v1count], self.mc_v1[i_b, v1count - 1]):
                     v1count += 1
 
                 _, p = self.gjk_support_geom(n, i_gb, i_b)
                 self.mc_v2[i_b, v2count][0] = ti.math.dot(p, dir)
                 self.mc_v2[i_b, v2count][1] = ti.math.dot(p, dir2)
                 self.mc_v2[i_b, v2count][2] = ti.math.dot(p, normal)
-                
+
                 if i == 0:
                     v2count += 1
-                elif self.any_different(self.mc_v2[i_b, v2count], self.mc_v2[i_b, v2count-1]):
+                elif self.any_different(self.mc_v2[i_b, v2count], self.mc_v2[i_b, v2count - 1]):
                     v2count += 1
 
             # remove duplicate vertices on the array boundary
-            if v1count > 1 and self.all_same(self.mc_v1[i_b, v1count-1], self.mc_v1[i_b, 0]):
+            if v1count > 1 and self.all_same(self.mc_v1[i_b, v1count - 1], self.mc_v1[i_b, 0]):
                 v1count -= 1
 
-            if v2count > 1 and self.all_same(self.mc_v2[i_b, v2count-1], self.mc_v2[i_b, 0]):
+            if v2count > 1 and self.all_same(self.mc_v2[i_b, v2count - 1], self.mc_v2[i_b, 0]):
                 v2count -= 1
-                
+
             # find an intersecting polygon between v1 and v2 in the 2D plane
             candCount = 0
-            
+
             if v2count > 1:
                 for i in range(v1count):
                     m1a = self.mc_v1[i_b, i]
                     is_in = 1
-                    
+
                     # check if point m1a is inside the v2 polygon on the 2D plane
                     for j in range(v2count):
                         j2 = (j + 1) % v2count
@@ -452,7 +456,9 @@ class GJKEPA:
                         # counter-clockwise. If so, point m1a is inside the v2 polygon.
                         v2j = self.mc_v2[i_b, j]
                         v2j2 = self.mc_v2[i_b, j2]
-                        is_in = is_in * ((v2j2[0] - v2j[0]) * (m1a[1] - v2j[1]) - (v2j2[1] - v2j[1]) * (m1a[0] - v2j[0]) >= 0.0)
+                        is_in = is_in * (
+                            (v2j2[0] - v2j[0]) * (m1a[1] - v2j[1]) - (v2j2[1] - v2j[1]) * (m1a[0] - v2j[0]) >= 0.0
+                        )
 
                         if not is_in:
                             break
@@ -472,13 +478,16 @@ class GJKEPA:
                 for i in range(v2count):
                     m1a = self.mc_v2[i_b, i]
                     is_in = 1
-                    
+
                     for j in range(v1count):
                         j2 = (j + 1) % v1count
-                        
+
                         v1j = self.mc_v1[i_b, j]
                         v1j2 = self.mc_v1[i_b, j2]
-                        is_in = is_in * (v1j2[0] - v1j[0]) * (m1a[1] - v1j[1]) - (v1j2[1] - v1j[1]) * (m1a[0] - v1j[0]) >= 0.0
+                        is_in = (
+                            is_in * (v1j2[0] - v1j[0]) * (m1a[1] - v1j[1]) - (v1j2[1] - v1j[1]) * (m1a[0] - v1j[0])
+                            >= 0.0
+                        )
                         if not is_in:
                             break
 
@@ -532,7 +541,7 @@ class GJKEPA:
                                 candCount += 1
 
             var_rx = ti.math.vec3(0, 0, 0)
-            
+
             if candCount > 0:
                 # Polygon intersection was found.
                 # TODO(btaba): replace the above routine with the manifold point routine
@@ -542,16 +551,16 @@ class GJKEPA:
                 for k in range(self.MULTI_CONTACT_COUNT):
                     outk = self.mc_out[i_b, k]
                     pt = outk[0] * dir + outk[1] * dir2 + outk[2] * normal
-                    
+
                     # skip contact points that are too close
                     if ti.math.length(pt - last_pt) <= 1e-6:
                         continue
-                    
+
                     self.mc_contact_points[i_b, contact_count] = pt
                     last_pt = pt
-                    contact_count += 1      
+                    contact_count += 1
             # @TODO: check stability of the below code
-            '''
+            """
             else:            
                 # Polygon intersection was not found. Loop through all vertex pairs and
                 # calculate an approximate contact point.
@@ -611,22 +620,22 @@ class GJKEPA:
                     self.mc_contact_points[i_b, k] = var_rx
                 
                 contact_count = 1
-            '''
-            
+            """
+
         self.mc_contact_count[i_b] = contact_count
-    
+
     @ti.func
     def all_same(self, v0, v1):
         dx = abs(v0[0] - v1[0])
         dy = abs(v0[1] - v1[1])
         dz = abs(v0[2] - v1[2])
-        
+
         return (
             (dx <= 1.0e-9 or dx <= max(abs(v0[0]), abs(v1[0])) * 1.0e-9)
             and (dy <= 1.0e-9 or dy <= max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
             and (dz <= 1.0e-9 or dz <= max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
         )
-    
+
     @ti.func
     def any_different(self, v0, v1):
         dx = abs(v0[0] - v1[0])
@@ -638,16 +647,15 @@ class GJKEPA:
             or (dy > 1.0e-9 and dy > max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
             or (dz > 1.0e-9 and dz > max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
         )
-        
-    
+
     @ti.func
     def compute_support(self, direction, i_ga, i_gb, i_b):
         dist1, s1 = self.gjk_support_geom(direction, i_ga, i_b)
         dist2, s2 = self.gjk_support_geom(-direction, i_gb, i_b)
-        
+
         support_pt = s1 - s2
         return dist1 + dist2, support_pt
-    
+
     @ti.func
     def gjk_support_geom(self, direction, i_g, i_b):
         support_pt = self.support_driver(direction, i_g, i_b)
@@ -663,7 +671,7 @@ class GJKEPA:
             b = a / norm
             success = 1
         return b, success
-        
+
     @ti.func
     def gjk_orthonormal(self, normal):
         dir = ti.math.vec3(0.0, 0.0, 0.0)
@@ -675,7 +683,7 @@ class GJKEPA:
             dir = ti.math.vec3(-normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2])
         dir, _ = self.gjk_normalize(dir)
         return dir
-    
+
     def reset(self):
         pass
 

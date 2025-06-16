@@ -186,18 +186,23 @@ class GJKEPA:
         ### Support field
         self.support_field = SupportField(rigid_solver)
 
+    @ti.func
+    def clear_cache(self, i_b):
+        '''
+        Clear the cache information for support point query.
+        '''
+        self.support_vertex_id[i_b, 0] = -1
+        self.support_vertex_id[i_b, 1] = -1
+
     """
     GJK algorithms
     """
 
     @ti.func
-    def func_gjk(self, i_ga, i_gb, i_b):
+    def func_gjk(self, i_ga, i_gb, i_b, shrink_sphere):
         """
         GJK algorithm to compute the minimum distance between two convex objects.
         """
-        # Initialize the support vertex cache, because often GJK is the entry point
-        self.support_vertex_id[i_b, 0] = -1
-        self.support_vertex_id[i_b, 1] = -1
 
         # Simplex index
         n = 0
@@ -208,6 +213,9 @@ class GJKEPA:
         # Number of witness points and distance
         nx = 0
         dist = 0.0
+
+        # Lambda for barycentric coordinates
+        _lambda = gs.ti_vec4(1.0, 0.0, 0.0, 0.0)
 
         # Final return flag
         return_flag = 0
@@ -225,9 +233,13 @@ class GJKEPA:
 
         support_vector_norm = 0.0
 
-        # Since we use GJK mainly for collision detection,
-        # we use gjk_intersect when it is available
-        backup_gjk = 1
+        # Whether or not we need to compute the exact distance.
+        # If we shrink the sphere and capsule, we need to compute the distance.
+        get_dist = shrink_sphere
+
+        # We can use GJK intersection algorithm only for collision detection
+        # if we do not have to compute the distance.
+        backup_gjk = not get_dist
 
         epsilon = 0.0
         if not self.func_is_discrete_geoms(i_ga, i_gb, i_b):
@@ -242,7 +254,7 @@ class GJKEPA:
                 # If the support vector is too small, it means
                 # that origin is located in the Minkowski difference
                 # with high probability, so we can stop.
-                # support_vector_norm = 0
+                support_vector_norm = ti.math.sqrt(support_vector_norm)
                 break
 
             support_vector_norm = ti.math.sqrt(support_vector_norm)
@@ -257,7 +269,7 @@ class GJKEPA:
                 self.gjk_simplex_vertex[i_b, n].id1,
                 self.gjk_simplex_vertex[i_b, n].id2,
                 self.gjk_simplex_vertex[i_b, n].mink,
-            ) = self.func_support(i_ga, i_gb, i_b, dir)
+            ) = self.func_support(i_ga, i_gb, i_b, dir, shrink_sphere)
 
             # Early stopping based on Frank-Wolfe duality gap.
             # We need to find the minimum [support_vector_norm], and if
@@ -277,17 +289,19 @@ class GJKEPA:
                 break
 
             # Check if the objects are separated using support vector
-            is_separated = x_k.dot(s_k) > 0.0
-            if is_separated:
-                nsimplex = 0
-                nx = 0
-                dist = self.FLOAT_MAX
-                return_flag = 2
-                break
+            if not get_dist:
+                is_separated = x_k.dot(s_k) > 0.0
+                if is_separated:
+                    nsimplex = 0
+                    nx = 0
+                    dist = self.FLOAT_MAX
+                    return_flag = 2
+                    break
 
             if n == 3 and backup_gjk:
-                # Tetrahedron is generated, try to get contact info
-                intersect_flag = self.func_gjk_intersect(i_ga, i_gb, i_b)
+                # Tetrahedron is generated, try to detect collision if possible.
+                # It is guaranteed that [shrink_sphere] is False here.
+                intersect_flag = self.func_gjk_intersect(i_ga, i_gb, i_b, False)
                 if intersect_flag == 0:
                     # No intersection, objects are separated
                     nx = 0
@@ -305,12 +319,12 @@ class GJKEPA:
                 else:
                     # Since gjk_intersect failed (e.g. origin is on the simplex face),
                     # we fallback to minimum distance computation
-                    backup_gjk = 0
+                    backup_gjk = False
 
             # Run the distance subalgorithm to compute the barycentric
             # coordinates of the closest point to the origin in the simplex
             _lambda = self.func_simple_gjk_subdistance(i_b, n + 1)
-
+            
             # Remove vertices from the simplex with zero barycentric coordinates
             # as they are not needed for the next iteration
             n = 0
@@ -346,20 +360,28 @@ class GJKEPA:
                 break
 
         if return_flag == 0:
-            # If there was no conclusion until now...
+            # If [get_dist] was True and there was no numerical error,
+            # [return_flag] would be 0 and this logic works.
             nx = 1
             nsimplex = n
             dist = support_vector_norm
 
+            # Compute witness points
+            self.witness[i_b, 0].point_obj1 = self.func_simplex_vertex_linear_comb(
+                i_b, 0, 0, 1, 2, 3, _lambda, nsimplex
+            )
+            self.witness[i_b, 0].point_obj2 = self.func_simplex_vertex_linear_comb(
+                i_b, 1, 0, 1, 2, 3, _lambda, nsimplex
+            )
+
         self.num_witness[i_b] = nx
         self.distance[i_b] = dist
         self.gjk_nsimplex[i_b] = nsimplex
-        collision = dist < self.collision_eps
-
-        return collision
+        
+        return self.distance[i_b]
 
     @ti.func
-    def func_gjk_intersect(self, i_ga, i_gb, i_b):
+    def func_gjk_intersect(self, i_ga, i_gb, i_b, shrink_sphere):
 
         # copy simplex to temporary storage
         self.gjk_simplex_vertex_intersect[i_b, 0] = self.gjk_simplex_vertex[i_b, 0]
@@ -429,7 +451,7 @@ class GJKEPA:
                 self.gjk_simplex_vertex_intersect[i_b, min_si].id1,
                 self.gjk_simplex_vertex_intersect[i_b, min_si].id2,
                 self.gjk_simplex_vertex_intersect[i_b, min_si].mink,
-            ) = self.func_support(i_ga, i_gb, i_b, min_normal)
+            ) = self.func_support(i_ga, i_gb, i_b, min_normal, shrink_sphere)
 
             # Check if the origin is strictly outside of the Minkowski difference
             # (which means there is no collision)
@@ -520,6 +542,7 @@ class GJKEPA:
             elif i == 3:
                 v1, v2, v3 = s1, s2, s3
             Cs[i] = self.func_det3(v1, v2, v3)
+        Cs[0], Cs[2] = -Cs[0], -Cs[2]
         C1, C2, C3, C4 = Cs[0], Cs[1], Cs[2], Cs[3]
         m_det = C1 + C2 + C3 + C4
 
@@ -876,6 +899,7 @@ class GJKEPA:
             elif i == 3:
                 v1, v2, v3 = s1, s2, s3
             Cs[i] = self.func_det3(v1, v2, v3)
+        Cs[0], Cs[2] = -Cs[0], -Cs[2]
         C1, C2, C3, C4 = Cs[0], Cs[1], Cs[2], Cs[3]
         m_det = C1 + C2 + C3 + C4
 
@@ -1717,7 +1741,7 @@ class GJKEPA:
             support_point_id_obj1,
             support_point_id_obj2,
             support_point_minkowski,
-        ) = self.func_support(i_ga, i_gb, i_b, d)
+        ) = self.func_support(i_ga, i_gb, i_b, d, False)
 
         # Insert the support points into the polytope
         v_index = self.func_epa_insert_vertex_to_polytope(
@@ -3014,7 +3038,7 @@ class GJKEPA:
         return res
 
     @ti.func
-    def func_support(self, i_ga, i_gb, i_b, dir):
+    def func_support(self, i_ga, i_gb, i_b, dir, shrink_sphere):
         """
         Find support points on the two objects using [dir].
         [dir] should be a unit vector from [ga] (obj1) to [gb] (obj2).
@@ -3027,7 +3051,7 @@ class GJKEPA:
             d = dir if i == 0 else -dir
             i_g = i_ga if i == 0 else i_gb
 
-            sp, si = self.support_driver(d, i_g, i_b, i)
+            sp, si = self.support_driver(d, i_g, i_b, i, shrink_sphere)
             if i == 0:
                 support_point_obj1 = sp
                 support_point_id_obj1 = si
@@ -3230,10 +3254,15 @@ class GJKEPA:
         pass
 
     @ti.func
-    def support_sphere(self, direction, i_g, i_b):
+    def support_sphere(self, direction, i_g, i_b, shrink):
         sphere_center = self._solver.geoms_state[i_g, i_b].pos
         sphere_radius = self._solver.geoms_info[i_g].data[0]
-        return sphere_center + direction * sphere_radius
+
+        # If shrink, shrink the sphere to a point
+        res = sphere_center
+        if not shrink:
+            res += direction * sphere_radius
+        return res
 
     @ti.func
     def support_ellipsoid(self, direction, i_g, i_b):
@@ -3252,18 +3281,26 @@ class GJKEPA:
         return ellipsoid_center + direction * dist
 
     @ti.func
-    def support_capsule(self, direction, i_g, i_b):
+    def support_capsule(self, direction, i_g, i_b, shrink):
+        res = gs.ti_vec3(0, 0, 0)
         g_state = self._solver.geoms_state[i_g, i_b]
-        capule_center = g_state.pos
-        capsule_axis = gu.ti_transform_by_quat(ti.Vector([0.0, 0.0, 1.0], dt=gs.ti_float), g_state.quat)
-        capule_radius = self._solver.geoms_info[i_g].data[0]
-        capule_halflength = 0.5 * self._solver.geoms_info[i_g].data[1]
-        capule_endpoint_side = ti.math.sign(direction.dot(capsule_axis))
-        if capule_endpoint_side == 0.0:
-            capule_endpoint_side = 1.0
-        capule_endpoint = capule_center + capule_halflength * capule_endpoint_side * capsule_axis
-        return capule_endpoint + direction * capule_radius
+        capsule_center = g_state.pos
+        capsule_radius = self._solver.geoms_info[i_g].data[0]
+        capsule_halflength = 0.5 * self._solver.geoms_info[i_g].data[1]
 
+        if shrink:
+            local_dir = gu.ti_transform_by_quat(direction, gu.ti_inv_quat(g_state.quat))
+            res[2] = capsule_halflength if local_dir[2] >= 0.0 else -capsule_halflength
+            res = gu.ti_transform_by_trans_quat(res, capsule_center, g_state.quat)
+        else:
+            capsule_axis = gu.ti_transform_by_quat(ti.Vector([0.0, 0.0, 1.0], dt=gs.ti_float), g_state.quat)
+            capsule_endpoint_side = ti.math.sign(direction.dot(capsule_axis))
+            if capsule_endpoint_side == 0.0:
+                capsule_endpoint_side = 1.0
+            capsule_endpoint = capsule_center + capsule_halflength * capsule_endpoint_side * capsule_axis
+            res = capsule_endpoint + direction * capsule_radius
+        return res
+    
     # @ti.func
     # def support_prism(self, direction, i_g, i_b):
     #     ibest = 0
@@ -3349,17 +3386,20 @@ class GJKEPA:
         return v_, vid
 
     @ti.func
-    def support_driver(self, direction, i_g, i_b, i_o):
+    def support_driver(self, direction, i_g, i_b, i_o, shrink_sphere):
+        '''
+        @ shrink_sphere: If True, use point and line support for sphere and capsule.
+        '''
         v = ti.Vector.zero(gs.ti_float, 3)
         vid = -1
 
         geom_type = self._solver.geoms_info[i_g].type
         if geom_type == gs.GEOM_TYPE.SPHERE:
-            v = self.support_sphere(direction, i_g, i_b)
+            v = self.support_sphere(direction, i_g, i_b, shrink_sphere)
         elif geom_type == gs.GEOM_TYPE.ELLIPSOID:
             v = self.support_ellipsoid(direction, i_g, i_b)
         elif geom_type == gs.GEOM_TYPE.CAPSULE:
-            v = self.support_capsule(direction, i_g, i_b)
+            v = self.support_capsule(direction, i_g, i_b, shrink_sphere)
         elif geom_type == gs.GEOM_TYPE.BOX:
             v, vid = self.support_box(direction, i_g, i_b)
         elif geom_type == gs.GEOM_TYPE.TERRAIN:

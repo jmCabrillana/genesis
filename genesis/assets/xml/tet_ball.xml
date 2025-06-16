@@ -29,7 +29,7 @@
       <geom name="seg2_geom" class="/" type="sphere" size="0.1"/>
     </body>
 
-    <body name="sphere3" pos="0.3 0.3 1.2">
+    <body name="sphere3" pos="0.3 0.29 1.2">
       <joint name="root3" class="/" type="free"/>
       <geom name="seg3_geom" class="/" type="sphere" size="0.1"/>
     </body>
