@@ -445,7 +445,9 @@ def build_mujoco_sim(
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_REFSAFE)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_GRAVITY)
-    if not native_ccd:
+    if native_ccd:
+        model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_NATIVECCD)
+    else:
         model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
     if multi_contact:
         model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
@@ -570,6 +572,10 @@ def check_mujoco_model_consistency(
     mj_adj_collision = bool(mj_sim.model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
     gs_adj_collision = gs_sim.rigid_solver._options.enable_adjacent_collision
     assert gs_adj_collision == mj_adj_collision
+
+    gs_use_gjk_collision = gs_sim.rigid_solver._options.use_gjk_collision
+    mj_use_gjk_collision = not (mj_sim.model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_NATIVECCD)
+    assert gs_use_gjk_collision == mj_use_gjk_collision
 
     mj_solver = mujoco.mjtSolver(mj_sim.model.opt.solver)
     if mj_solver.name == "mjSOL_PGS":

@@ -283,6 +283,7 @@ def double_pendulum(asset_tmp_path):
 @pytest.mark.parametrize("model_name", ["box_plan"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_box_plane_dynamics(gs_sim, mj_sim, tol):
     cube_pos = np.array([0.0, 0.0, 0.6])
@@ -298,6 +299,7 @@ def test_box_plane_dynamics(gs_sim, mj_sim, tol):
 @pytest.mark.parametrize("model_name", ["chain_capsule_hinge_mesh"])  # FIXME: , "chain_capsule_hinge_capsule"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_simple_kinematic_chain(gs_sim, mj_sim, tol):
     simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=200, tol=tol)
@@ -315,6 +317,7 @@ def test_simple_kinematic_chain(gs_sim, mj_sim, tol):
     ],
 )
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_walker(gs_sim, mj_sim, tol):
     # Force numpy seed because this test is very sensitive to the initial condition
@@ -325,7 +328,7 @@ def test_walker(gs_sim, mj_sim, tol):
     qvel = np.random.rand(gs_robot.n_dofs) * 0.2
 
     # Cannot simulate any longer because collision detection is very sensitive
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, qpos, qvel, num_steps=90, tol=tol)
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, qpos, qvel, num_steps=300, tol=tol)
 
 
 @pytest.mark.parametrize("model_name", ["mimic_hinges"])
@@ -393,6 +396,7 @@ def test_one_ball_joint(gs_sim, mj_sim, tol):
 @pytest.mark.parametrize("xml_path", ["xml/rope_ball.xml", "xml/rope_hinge.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_rope_ball(gs_sim, mj_sim, gs_solver, tol):
     # Make sure it is possible to set the configuration vector without failure
@@ -406,6 +410,7 @@ def test_rope_ball(gs_sim, mj_sim, gs_solver, tol):
 @pytest.mark.multi_contact(False)
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_urdf_rope(
     gs_solver,
@@ -453,7 +458,7 @@ def test_urdf_rope(
     mj_sim.model.eq_solref[:, 0] = sol_params[0]
 
     # FIXME: Tolerance must be very large due to small masses and compounding of errors over long kinematic chains
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=300, tol=5e-5)
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=5e-5)
 
 
 @pytest.mark.required
@@ -2388,50 +2393,21 @@ def test_mesh_to_heightfield(show_viewer):
     qvel = ball.get_dofs_velocity().cpu()
     assert_allclose(qvel, 0, atol=1e-2)
 
-
 @pytest.mark.mujoco_compatibility(True)
-@pytest.mark.gjk_collision(True)
-@pytest.mark.multi_contact(False)
-@pytest.mark.parametrize("xml_path", ["xml/tet_tet.xml"])
+@pytest.mark.multi_contact(False)   # FIXME: Mujoco has errors with multi-contact, so this test is disabled
+@pytest.mark.parametrize("xml_path", ["xml/tet_tet.xml", "xml/tet_ball.xml", "xml/tet_capsule.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_tet_tet(gs_sim, mj_sim, gs_solver, tol):
+def test_tet_primitive_shapes(gs_sim, mj_sim, gs_solver, xml_path, tol):
     # Make sure it is possible to set the configuration vector without failure
     gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
 
     check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
-    tol = 1e-6
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)
-
-
-@pytest.mark.mujoco_compatibility(True)
-@pytest.mark.gjk_collision(True)
-@pytest.mark.multi_contact(False)
-@pytest.mark.parametrize("xml_path", ["xml/tet_ball.xml"])
-@pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
-@pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
-@pytest.mark.parametrize("backend", [gs.cpu])
-def test_tet_ball(gs_sim, mj_sim, gs_solver, tol):
-    # Make sure it is possible to set the configuration vector without failure
-    gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
-
-    check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
-    tol = 2e-8
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)
-
-
-@pytest.mark.mujoco_compatibility(True)
-@pytest.mark.gjk_collision(True)
-@pytest.mark.multi_contact(False)
-@pytest.mark.parametrize("xml_path", ["xml/tet_capsule.xml"])
-@pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
-@pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
-@pytest.mark.parametrize("backend", [gs.cpu])
-def test_tet_capsule(gs_sim, mj_sim, gs_solver, tol):
-    # Make sure it is possible to set the configuration vector without failure
-    gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
-
-    check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
-    tol = 2e-8
+    if xml_path == "xml/tet_tet.xml":
+        # FIXME: Because of very small numerical error, error could be this large even if there is no logical error
+        tol = 1e-6  
+    else:
+        tol = 2e-8
     simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)
