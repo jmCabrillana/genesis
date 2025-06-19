@@ -762,8 +762,18 @@ def check_mujoco_data_consistency(
     if gs_n_constraints:
         gs_contact_pos = gs_sim.rigid_solver.collider.contact_data.pos.to_numpy()[:gs_n_contacts, 0]
         mj_contact_pos = mj_sim.data.contact.pos
-        gs_sidx = np.argsort(gs_contact_pos[:, 0])
-        mj_sidx = np.argsort(mj_contact_pos[:, 0])
+        # Sort based on the axis with the largest variation
+        max_var_axis = 0
+        if gs_n_contacts > 1:
+            max_var = -1
+            for axis in range(3):
+                sorted_contact_pos = np.sort(mj_contact_pos[:, axis])
+                var = np.min(sorted_contact_pos[1:] - sorted_contact_pos[:-1])
+                if var > max_var:
+                    max_var_axis = axis
+                    max_var = var
+        gs_sidx = np.argsort(gs_contact_pos[:, max_var_axis])
+        mj_sidx = np.argsort(mj_contact_pos[:, max_var_axis])
         assert_allclose(gs_contact_pos[gs_sidx], mj_contact_pos[mj_sidx], tol=tol)
         gs_contact_normal = gs_sim.rigid_solver.collider.contact_data.normal.to_numpy()[:gs_n_contacts, 0]
         mj_contact_normal = -mj_sim.data.contact.frame[:, :3]

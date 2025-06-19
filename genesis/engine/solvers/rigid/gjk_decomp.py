@@ -447,6 +447,7 @@ class GJK:
             if n == 4:
                 # We have a tetrahedron containing the origin, so we can return early. This is because only when 
                 # the origin is inside the tetrahedron, the barycentric coordinates are all positive.
+                support_vector_norm = 0
                 break
 
         if return_flag == 0:
