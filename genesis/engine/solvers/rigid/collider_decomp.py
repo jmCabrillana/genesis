@@ -10,9 +10,15 @@ from genesis.styles import colors, formats
 from .mpr_decomp import MPR
 from .gjk_decomp import GJK
 
+from enum import IntEnum
+
 if TYPE_CHECKING:
     from genesis.engine.solvers.rigid.rigid_solver_decomp import RigidSolver
 
+class CCD_ALGORITHM_CODE(IntEnum):
+    MPR = 0
+    MPR_SDF = 1
+    GJK = 2
 
 @ti.func
 def rotaxis(vecin, i0, i1, i2, f0, f1, f2):
@@ -38,10 +44,20 @@ class Collider:
         self._solver = rigid_solver
         self._init_verts_connectivity()
         self._init_collision_fields()
-        self._mpr = MPR(rigid_solver)
-        self._gjk = GJK(rigid_solver)
-        self.use_gjk = self._solver._options.use_gjk_collision
 
+        # Identify the collision detection algorithm
+        if self._solver._options.use_gjk_collision:
+            self.ccd_algorithm = CCD_ALGORITHM_CODE.GJK
+        elif self._solver._enable_mujoco_compatibility:
+            self.ccd_algorithm = CCD_ALGORITHM_CODE.MPR
+        else:
+            self.ccd_algorithm = CCD_ALGORITHM_CODE.MPR_SDF
+        
+        if self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK:
+            self._gjk = GJK(rigid_solver)
+        else:
+            self._mpr = MPR(rigid_solver)
+        
         # multi contact perturbation and tolerance
         if self._solver._enable_mujoco_compatibility:
             self._mc_perturbation = 1e-3
@@ -874,7 +890,7 @@ class Collider:
                         and self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
                     )
                 ):
-                    if ti.static(self.use_gjk):
+                    if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
                         self._func_gjk(i_ga, i_gb, i_b)
                     else:
                         self._func_mpr(i_ga, i_gb, i_b)

@@ -43,25 +43,30 @@ class GJK:
         self._solver = rigid_solver
         self._B = rigid_solver._B
 
-        # Maximum number of contact points to find per pair
+        # Maximum number of contact points to find per pair.
+        # It is related to the number of vertices in the contact polygon face when detecting multi-contact.
         if self._solver._enable_mujoco_compatibility:
             self.max_contacts_per_pair = 50
+            self.max_contact_polygon_verts = 150
         else:
             # If we assume most of the faces are triangles or quads, 8 points should be enough.
             self.max_contacts_per_pair = 8
+            self.max_contact_polygon_verts = 24
 
         # Maximum number of iterations for GJK and EPA algorithms
         self.gjk_max_iterations = 50
         self.epa_max_iterations = 50
 
-        # Tolerance for normal alignment of two faces (cosine of 1.6e-3)
-        self.face_tol = 0.99999872
-        # Tolerance for edge-face alignment (sine of 1.6e-3)
-        self.edge_tol = 0.00159999931
+        # Tolerance for normal alignment of two faces (cosine of 1.6e-3) during multi-contact detection
+        self.multi_contact_face_tol = 0.99999872
+        # Tolerance for edge-face alignment (sine of 1.6e-3) during multi-contact detection
+        self.multi_contact_edge_tol = 0.00159999931
 
         if self._solver._enable_mujoco_compatibility:
             self.FLOAT_MIN = gs.np_float(1e-15)
+            # Tolerance for stopping GJK and EPA algorithms when they converge.
             self.tolerance = gs.np_float(1e-6)
+            # If the distance between two objects is smaller than this value, we consider them colliding.
             self.collision_eps = gs.np_float(1e-6)
         else:
             self.FLOAT_MIN = gs.EPS
@@ -88,10 +93,10 @@ class GJK:
             nverts=gs.ti_int,
             dist=gs.ti_float,
         )
-        self.gjk_simplex_vertex = struct_simplex_vertex.field(shape=(self._B, 4))
-        self.gjk_simplex_vertex_intersect = struct_simplex_vertex.field(shape=(self._B, 4))
-        self.gjk_simplex = struct_simplex.field(shape=(self._B,))
-        self.gjk_nsimplex = ti.field(dtype=gs.ti_int, shape=(self._B,))
+        self.simplex_vertex = struct_simplex_vertex.field(shape=(self._B, 4))
+        self.simplex_vertex_intersect = struct_simplex_vertex.field(shape=(self._B, 4))
+        self.simplex = struct_simplex.field(shape=(self._B,))
+        self.nsimplex = ti.field(dtype=gs.ti_int, shape=(self._B,))
 
         ### EPA
         struct_polytope_vertex = struct_simplex_vertex
@@ -157,8 +162,6 @@ class GJK:
         self.distance = ti.field(dtype=gs.ti_float, shape=(self._B,))
 
         ### Multi-contact
-        # Max. number of support vertices in a polygon face
-        self.max_polygon_verts = 150
         struct_multi_contact_face = ti.types.struct(
             # Face vertices
             face1=gs.ti_vec3,

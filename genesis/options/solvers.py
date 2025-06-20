@@ -189,7 +189,8 @@ class RigidOptions(Options):
     max_dynamic_constraints : int, optional
         Maximum number of dynamic constraints (like suction cup). Defaults to 8.
     use_gjk_collision: bool, optional
-        Whether to use GJK for collision detection. Defaults to False.
+        Whether to use GJK for collision detection. Defaults to False, because it requires more compilation time
+        than MPR or MPR++. Also, it requires more stress testing before being fully supported.
 
     Warning
     -------
