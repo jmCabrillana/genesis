@@ -1069,7 +1069,11 @@ class Collider:
         plane_dir = gu.ti_transform_by_quat(plane_dir, ga_state.quat)
         normal = -plane_dir.normalized()
 
-        v1 = self._mpr.support_driver(normal, i_gb, i_b)
+        v1 = gs.ti_vec3(0, 0, 0)
+        if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
+            v1, _ = self._gjk.support_field._func_support_box(normal, i_gb, i_b)
+        else:
+            v1 = self._mpr.support_driver(normal, i_gb, i_b)
         penetration = normal.dot(v1 - ga_state.pos)
 
         if penetration > 0.0:

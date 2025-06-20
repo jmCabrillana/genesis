@@ -57,10 +57,13 @@ class GJK:
         self.gjk_max_iterations = 50
         self.epa_max_iterations = 50
 
-        # Tolerance for normal alignment of two faces (cosine of 1.6e-3) during multi-contact detection
-        self.multi_contact_face_tol = 0.99999872
-        # Tolerance for edge-face alignment (sine of 1.6e-3) during multi-contact detection
-        self.multi_contact_edge_tol = 0.00159999931
+        # Tolerance for normal alignment between (face-face) or (edge-face) during multi-contact detection.
+        # The normals should align within this tolerance to be considered as a valid parallel contact.
+        # The values are cosine and sine of 1.6e-3, respectively.
+        # TODO: These parameters are from MuJoCo, but seem to be very strict. Need some tests to verify if they are
+        # the best values.
+        self.contact_face_tol = 0.99999872
+        self.contact_edge_tol = 0.00159999931
 
         if self._solver._enable_mujoco_compatibility:
             self.FLOAT_MIN = gs.np_float(1e-15)
@@ -76,6 +79,12 @@ class GJK:
         self.FLOAT_MIN_SQ = self.FLOAT_MIN * self.FLOAT_MIN
         self.FLOAT_MAX = gs.np_float(1e15)
         self.FLOAT_MAX_SQ = self.FLOAT_MAX * self.FLOAT_MAX
+
+        ### Supports for GJK-EPA
+        # Cache for support points
+        self.support_vertex_id = ti.field(dtype=gs.ti_int, shape=(self._B, 2))
+        # Support field to find support points
+        self.support_field = SupportField(rigid_solver)
 
         ### GJK
         struct_simplex_vertex = ti.types.struct(
@@ -93,9 +102,16 @@ class GJK:
             nverts=gs.ti_int,
             dist=gs.ti_float,
         )
+        struct_simplex_buffer = ti.types.struct(
+            # Normals of the simplex faces
+            normal=gs.ti_vec3,
+            # Signed distances of the simplex faces from the origin
+            sdist=gs.ti_float,
+        )
         self.simplex_vertex = struct_simplex_vertex.field(shape=(self._B, 4))
-        self.simplex_vertex_intersect = struct_simplex_vertex.field(shape=(self._B, 4))
         self.simplex = struct_simplex.field(shape=(self._B,))
+        self.simplex_vertex_intersect = struct_simplex_vertex.field(shape=(self._B, 4))
+        self.simplex_buffer_intersect = struct_simplex_buffer.field(shape=(self._B, 4))
         self.nsimplex = ti.field(dtype=gs.ti_int, shape=(self._B,))
 
         ### EPA
@@ -145,6 +161,38 @@ class GJK:
         # because a face has 3 edges.
         self.polytope_horizon_stack = struct_polytope_horizon_data.field(shape=(self._B, self.polytope_max_faces * 3))
 
+        ### Multi-contact
+        struct_contact_face = ti.types.struct(
+            # Face vertices
+            face1=gs.ti_vec3,
+            face2=gs.ti_vec3,
+            endverts=gs.ti_vec3,
+            # Normals of face collisions
+            normal1=gs.ti_vec3,
+            normal2=gs.ti_vec3,
+            # Face ID
+            id1=gs.ti_int,
+            id2=gs.ti_int,
+        )
+        # Struct for storing temp. contact normals
+        struct_contact_normal = ti.types.struct(
+            endverts=gs.ti_vec3,
+            # Normal vector of the contact point
+            normal=gs.ti_vec3,
+            # Face ID
+            id=gs.ti_int,
+        )
+        struct_contact_halfspace = ti.types.struct(
+            # Halfspace normal
+            normal=gs.ti_vec3,
+            # Halfspace distance from the origin
+            dist=gs.ti_float,
+        )
+        self.contact_faces = struct_contact_face.field(shape=(self._B, self.max_contact_polygon_verts))
+        self.contact_normals = struct_contact_normal.field(shape=(self._B, self.max_contact_polygon_verts))
+        self.contact_halfspaces = struct_contact_halfspace.field(shape=(self._B, self.max_contact_polygon_verts))
+        self.contact_clipped_polygons = gs.ti_vec3.field(shape=(self._B, 2, self.max_contact_polygon_verts))
+
         ### Final results
         struct_witness = ti.types.struct(
             # Witness points on the two objects
@@ -161,44 +209,6 @@ class GJK:
         # If the objects are intersecting, the distance is negative (depth).
         self.distance = ti.field(dtype=gs.ti_float, shape=(self._B,))
 
-        ### Multi-contact
-        struct_multi_contact_face = ti.types.struct(
-            # Face vertices
-            face1=gs.ti_vec3,
-            face2=gs.ti_vec3,
-            endverts=gs.ti_vec3,
-            # Normals of face collisions
-            normal1=gs.ti_vec3,
-            normal2=gs.ti_vec3,
-            # Face ID
-            id1=gs.ti_int,
-            id2=gs.ti_int,
-        )
-        # Struct for storing temp. contact normals
-        struct_multi_contact_normal = ti.types.struct(
-            endverts=gs.ti_vec3,
-            # Normal vector of the contact point
-            normal=gs.ti_vec3,
-            # Face ID
-            id=gs.ti_int,
-        )
-        struct_multi_contact_halfspace = ti.types.struct(
-            # Halfspace normal
-            normal=gs.ti_vec3,
-            # Halfspace distance from the origin
-            dist=gs.ti_float,
-        )
-        self.multi_contact_faces = struct_multi_contact_face.field(shape=(self._B, self.max_polygon_verts))
-        self.multi_contact_normals = struct_multi_contact_normal.field(shape=(self._B, self.max_polygon_verts))
-        self.multi_contact_halfspaces = struct_multi_contact_halfspace.field(shape=(self._B, self.max_polygon_verts))
-        self.multi_contact_clipped_polygons = gs.ti_vec3.field(shape=(self._B, 2, self.max_polygon_verts))
-
-        ### Cache for support vertex id
-        self.support_vertex_id = ti.field(dtype=gs.ti_int, shape=(self._B, 2))
-
-        ### Support
-        self.support_field = SupportField(rigid_solver)
-
     @ti.func
     def clear_cache(self, i_b):
         """
@@ -210,7 +220,9 @@ class GJK:
     @ti.func
     def func_gjk_contact(self, i_ga, i_gb, i_b, multi_contact):
         """
-        Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms.
+        Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms. The overall algorithm
+        is based on the MuJoCo implementation, which can be found here:
+        https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
 
         Parameters
         ----------
@@ -263,7 +275,7 @@ class GJK:
             shrink_sphere = False
 
         distance = self.distance[i_b]
-        nsimplex = self.gjk_nsimplex[i_b]
+        nsimplex = self.nsimplex[i_b]
         collided = distance < self.collision_eps
 
         # To run EPA, we need following conditions:
@@ -307,7 +319,21 @@ class GJK:
     @ti.func
     def func_gjk(self, i_ga, i_gb, i_b, shrink_sphere):
         """
-        GJK algorithm to compute the minimum distance between two convex objects.
+        GJK algorithm to compute the minimum distance between two convex objects. This implementation is based on the
+        MuJoCo implementation, which can be found here:
+        https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L171
+
+        The original GJK algorithm is explained in the paper:
+        
+        Gilbert, Elmer G., Daniel W. Johnson, and S. Sathiya Keerthi. 
+        "A fast procedure for computing the distance between complex objects in three-dimensional space." 
+        IEEE Journal on Robotics and Automation 4.2 (2002): 193-203.
+
+        TODO: This implementation could be further improved by referencing the following paper and implementation:
+
+        Cameron, Stephen. "Enhancing GJK: Computing minimum and penetration distances between convex polyhedra." 
+        Proceedings of international conference on robotics and automation. Vol. 4. IEEE, 1997.
+        https://www.cs.ox.ac.uk/people/stephen.cameron/distances/gjk2.4/
 
         Parameters
         ----------
@@ -363,11 +389,11 @@ class GJK:
             dir = -support_vector * (1.0 / support_vector_norm)
 
             (
-                self.gjk_simplex_vertex[i_b, n].obj1,
-                self.gjk_simplex_vertex[i_b, n].obj2,
-                self.gjk_simplex_vertex[i_b, n].id1,
-                self.gjk_simplex_vertex[i_b, n].id2,
-                self.gjk_simplex_vertex[i_b, n].mink,
+                self.simplex_vertex[i_b, n].obj1,
+                self.simplex_vertex[i_b, n].obj2,
+                self.simplex_vertex[i_b, n].id1,
+                self.simplex_vertex[i_b, n].id2,
+                self.simplex_vertex[i_b, n].mink,
             ) = self.func_support(i_ga, i_gb, i_b, dir, shrink_sphere)
 
             # Early stopping based on Frank-Wolfe duality gap. We need to find the minimum [support_vector_norm], 
@@ -377,7 +403,7 @@ class GJK:
             # where s is the vertex of the Minkowski difference found by x. Here < 2x, x - s > is guaranteed to be 
             # non-negative, and 2 is cancelled out in the definition of the epsilon.
             x_k = support_vector
-            s_k = self.gjk_simplex_vertex[i_b, n].mink
+            s_k = self.simplex_vertex[i_b, n].mink
             diff = x_k - s_k
             if diff.dot(x_k) < epsilon:
                 # Convergence condition is met, we can stop.
@@ -397,8 +423,7 @@ class GJK:
 
             if n == 3 and backup_gjk:
                 # Tetrahedron is generated, try to detect collision if possible. 
-                # It is guaranteed that [shrink_sphere] is False here.
-                intersect_flag = self.func_gjk_intersect(i_ga, i_gb, i_b, False)
+                intersect_flag = self.func_gjk_intersect(i_ga, i_gb, i_b)
                 if intersect_flag == 0:
                     # No intersection, objects are separated
                     nx = 0
@@ -414,20 +439,18 @@ class GJK:
                     return_flag = 1
                     break
                 else:
-                    # Since gjk_intersect failed (e.g. origin is on the simplex face),
-                    # we fallback to minimum distance computation
+                    # Since gjk_intersect failed (e.g. origin is on the simplex face), fallback to distance computation
                     backup_gjk = False
 
             # Run the distance subalgorithm to compute the barycentric 
             # coordinates of the closest point to the origin in the simplex
-            _lambda = self.func_simple_gjk_subdistance(i_b, n + 1)
+            _lambda = self.func_gjk_subdistance(i_b, n + 1)
 
-            # Remove vertices from the simplex with zero barycentric coordinates 
-            # as they are not needed for the next iteration
+            # Remove vertices from the simplex with zero barycentric coordinates
             n = 0
             for j in ti.static(range(4)):
                 if _lambda[j] > 0:
-                    self.gjk_simplex_vertex[i_b, n] = self.gjk_simplex_vertex[i_b, j]
+                    self.simplex_vertex[i_b, n] = self.simplex_vertex[i_b, j]
                     _lambda[n] = _lambda[j]
                     n += 1
 
@@ -449,7 +472,9 @@ class GJK:
 
             if n == 4:
                 # We have a tetrahedron containing the origin, so we can return early. This is because only when 
-                # the origin is inside the tetrahedron, the barycentric coordinates are all positive.
+                # the origin is inside the tetrahedron, the barycentric coordinates are all positive. While MuJoCo
+                # does not set the [support_vector_norm] to zero as we do, it is necessary, because otherwise the
+                # [support_vector_norm] could be non-zero value even if there is contact.
                 support_vector_norm = 0
                 break
 
@@ -471,18 +496,20 @@ class GJK:
 
         self.n_witness[i_b] = nx
         self.distance[i_b] = dist
-        self.gjk_nsimplex[i_b] = nsimplex
+        self.nsimplex[i_b] = nsimplex
 
         return self.distance[i_b]
 
     @ti.func
-    def func_gjk_intersect(self, i_ga, i_gb, i_b, shrink_sphere):
-
+    def func_gjk_intersect(self, i_ga, i_gb, i_b):
+        """
+        If we do not have to find the minimum distance between two objects and only have to check if they intersect,
+        we can use this function. It refines the simplex until it contains the origin or it is determined that the
+        objects are separated.
+        """
         # Copy simplex to temporary storage
-        self.gjk_simplex_vertex_intersect[i_b, 0] = self.gjk_simplex_vertex[i_b, 0]
-        self.gjk_simplex_vertex_intersect[i_b, 1] = self.gjk_simplex_vertex[i_b, 1]
-        self.gjk_simplex_vertex_intersect[i_b, 2] = self.gjk_simplex_vertex[i_b, 2]
-        self.gjk_simplex_vertex_intersect[i_b, 3] = self.gjk_simplex_vertex[i_b, 3]
+        for i in ti.static(range(4)):
+            self.simplex_vertex_intersect[i_b, i] = self.simplex_vertex[i_b, i]
 
         # Simplex index
         si = ti.Vector([0, 1, 2, 3], dt=gs.ti_int)
@@ -492,8 +519,7 @@ class GJK:
             # Compute normal and signed distance of the triangle faces of the simplex with respect to the origin.
             # These normals are supposed to point outwards from the simplex.
             # If the origin is inside the plane, [sdist] will be positive.
-            normal_0, normal_1, normal_2, normal_3 = gs.ti_vec3(0.0), gs.ti_vec3(0.0), gs.ti_vec3(0.0), gs.ti_vec3(0.0)
-            sdist_0, sdist_1, sdist_2, sdist_3 = 0.0, 0.0, 0.0, 0.0
+            is_sdist_all_zero = True
             for j in range(4):
                 s0, s1, s2 = si[2], si[1], si[3]
                 if j == 1:
@@ -505,40 +531,26 @@ class GJK:
                 
                 n, s = self.func_gjk_triangle_info(i_b, s0, s1, s2)
 
-                if j == 0:
-                    normal_0, sdist_0 = n, s
-                elif j == 1:
-                    normal_1, sdist_1 = n, s
-                elif j == 2:
-                    normal_2, sdist_2 = n, s
-                elif j == 3:
-                    normal_3, sdist_3 = n, s
+                self.simplex_buffer_intersect[i_b, j].normal = n
+                self.simplex_buffer_intersect[i_b, j].sdist = s
 
-            # If the origin is strictly on any affine hull of the triangle faces, 
-            # convergence will fail, so ignore this case
-            if sdist_0 == 0.0 or sdist_1 == 0.0 or sdist_2 == 0.0 or sdist_3 == 0.0:
+                if ti.abs(s) > self.FLOAT_MIN:
+                    is_sdist_all_zero = False
+
+            # If the origin is strictly on any affine hull of the faces, convergence will fail, so ignore this case
+            if is_sdist_all_zero:
                 flag = -1
                 break
 
-            # Find the face with the smallest signed distance
-            sdists = gs.ti_vec4(sdist_0, sdist_1, sdist_2, sdist_3)
+            # Find the face with the smallest signed distance. We need to find [min_i] for the next iteration.
             min_i = 0
             for j in range(1, 4):
-                if sdists[j] < sdists[min_i]:
+                if self.simplex_buffer_intersect[i_b, j].sdist < self.simplex_buffer_intersect[i_b, min_i].sdist:
                     min_i = j
+            
             min_si = si[min_i]
-
-            min_normal = normal_0
-            min_sdist = sdist_0
-            if min_i == 1:
-                min_normal = normal_1
-                min_sdist = sdist_1
-            elif min_i == 2:
-                min_normal = normal_2
-                min_sdist = sdist_2
-            elif min_i == 3:
-                min_normal = normal_3
-                min_sdist = sdist_3
+            min_normal = self.simplex_buffer_intersect[i_b, min_i].normal
+            min_sdist = self.simplex_buffer_intersect[i_b, min_i].sdist
 
             # If origin is inside the simplex, the signed distances will all be positive
             if min_sdist >= 0:
@@ -546,23 +558,21 @@ class GJK:
                 flag = 1
 
                 # Copy the temporary simplex to the main simplex
-                self.gjk_simplex_vertex[i_b, 0] = self.gjk_simplex_vertex_intersect[i_b, si[0]]
-                self.gjk_simplex_vertex[i_b, 1] = self.gjk_simplex_vertex_intersect[i_b, si[1]]
-                self.gjk_simplex_vertex[i_b, 2] = self.gjk_simplex_vertex_intersect[i_b, si[2]]
-                self.gjk_simplex_vertex[i_b, 3] = self.gjk_simplex_vertex_intersect[i_b, si[3]]
+                for j in ti.static(range(4)):
+                    self.simplex_vertex[i_b, j] = self.simplex_vertex_intersect[i_b, si[j]]
                 break
 
             # Replace the worst vertex (which has the smallest signed distance) with new candidate
             (
-                self.gjk_simplex_vertex_intersect[i_b, min_si].obj1,
-                self.gjk_simplex_vertex_intersect[i_b, min_si].obj2,
-                self.gjk_simplex_vertex_intersect[i_b, min_si].id1,
-                self.gjk_simplex_vertex_intersect[i_b, min_si].id2,
-                self.gjk_simplex_vertex_intersect[i_b, min_si].mink,
-            ) = self.func_support(i_ga, i_gb, i_b, min_normal, shrink_sphere)
+                self.simplex_vertex_intersect[i_b, min_si].obj1,
+                self.simplex_vertex_intersect[i_b, min_si].obj2,
+                self.simplex_vertex_intersect[i_b, min_si].id1,
+                self.simplex_vertex_intersect[i_b, min_si].id2,
+                self.simplex_vertex_intersect[i_b, min_si].mink,
+            ) = self.func_support(i_ga, i_gb, i_b, min_normal, False)
 
             # Check if the origin is strictly outside of the Minkowski difference (which means there is no collision)
-            new_minkowski = self.gjk_simplex_vertex_intersect[i_b, min_si].mink
+            new_minkowski = self.simplex_vertex_intersect[i_b, min_si].mink
 
             is_no_collision = new_minkowski.dot(min_normal) < 0
             if is_no_collision:
@@ -587,319 +597,42 @@ class GJK:
         """
         Compute normal and signed distance of the triangle face on the simplex from the origin.
         """
-        vertex_1 = self.gjk_simplex_vertex_intersect[i_b, i_va].mink
-        vertex_2 = self.gjk_simplex_vertex_intersect[i_b, i_vb].mink
-        vertex_3 = self.gjk_simplex_vertex_intersect[i_b, i_vc].mink
+        vertex_1 = self.simplex_vertex_intersect[i_b, i_va].mink
+        vertex_2 = self.simplex_vertex_intersect[i_b, i_vb].mink
+        vertex_3 = self.simplex_vertex_intersect[i_b, i_vc].mink
 
-        edge_1 = vertex_3 - vertex_1
-        edge_2 = vertex_2 - vertex_1
-        normal = edge_1.cross(edge_2)
+        normal = (vertex_3 - vertex_1).cross(vertex_2 - vertex_1)
+        normal_length = ti.math.length(normal)
 
-        normal_normsq = normal.dot(normal)
         sdist = 0.0
-        if (normal_normsq > self.FLOAT_MIN_SQ) and (normal_normsq < self.FLOAT_MAX_SQ):
-            normal = normal * (1.0 / ti.math.sqrt(normal_normsq))
+        if (normal_length > self.FLOAT_MIN) and (normal_length < self.FLOAT_MAX):
+            normal = normal * (1.0 / normal_length)
             sdist = normal.dot(vertex_1)
         else:
             # If the normal length is unstable, return max distance.
             sdist = self.FLOAT_MAX
 
         return normal, sdist
-
+    
     @ti.func
     def func_gjk_subdistance(self, i_b, n):
         """
-        Compute the barycentric coordinates of the closest point to the origin in the simplex.
-        [Montanari et al, ToG 2017]
+        Compute the barycentric coordinates of the closest point to the origin in the n-simplex.
+
+        .. seealso::
+        Montanari, Mattia, Nik Petrinic, and Ettore Barbieri. "Improving the GJK algorithm for faster and more reliable 
+        distance queries between convex objects." ACM Transactions on Graphics (TOG) 36.3 (2017): 1-17.
+        https://dl.acm.org/doi/10.1145/3072959.3083724
         """
         _lambda = ti.math.vec4(1.0, 0.0, 0.0, 0.0)
 
-        if n == 4:
-            _lambda = self.func_gjk_subdistance_3d(i_b, 0, 1, 2, 3)
-        elif n == 3:
-            _lambda = self.func_gjk_subdistance_2d(i_b, 0, 1, 2)
-        elif n == 2:
-            _lambda = self.func_gjk_subdistance_1d(i_b, 0, 1)
-
-        return _lambda
-
-    @ti.func
-    def func_gjk_subdistance_3d(self, i_b, i_s1, i_s2, i_s3, i_s4):
-
-        _lambda = gs.ti_vec4(0, 0, 0, 0)
-
-        # Simplex vertices
-        s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
-        s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
-        s3 = self.gjk_simplex_vertex[i_b, i_s3].mink
-        s4 = self.gjk_simplex_vertex[i_b, i_s4].mink
-
-        # Compute the cofactors to find det(M), which corresponds to the signed volume of the tetrahedron
-        Cs = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-        for i in range(4):
-            v1, v2, v3 = s2, s3, s4
-            if i == 1:
-                v1, v2, v3 = s1, s3, s4
-            elif i == 2:
-                v1, v2, v3 = s1, s2, s4
-            elif i == 3:
-                v1, v2, v3 = s1, s2, s3
-            Cs[i] = self.func_det3(v1, v2, v3)
-        Cs[0], Cs[2] = -Cs[0], -Cs[2]
-        C1, C2, C3, C4 = Cs[0], Cs[1], Cs[2], Cs[3]
-        m_det = C1 + C2 + C3 + C4
-
-        # Compare sign of the cofactors with the determinant
-        scs = gs.ti_ivec4(0, 0, 0, 0)
-        for i in range(4):
-            scs[i] = func_compare_sign(Cs[i], m_det)
-        sc1, sc2, sc3, sc4 = scs[0], scs[1], scs[2], scs[3]
-
-        if sc1 and sc2 and sc3 and sc4:
-            # If all barycentric coordinates are positive, the origin is inside the tetrahedron
-            for i in range(4):
-                _lambda[i] = Cs[i] / m_det
-        else:
-            # Since the origin is outside the tetrahedron, we need to find the closest point to the origin
-            dmin = self.FLOAT_MAX
-
-            # Project origin onto faces of the tetrahedron of which apex point has negative barycentric coordinate
-            for i in range(4):
-                j_s1, j_s2, j_s3 = i_s2, i_s3, i_s4
-                k_1, k_2, k_3 = 1, 2, 3
-                if i == 1:
-                    j_s1, j_s2, j_s3 = i_s1, i_s3, i_s4
-                    k_1, k_2, k_3 = 0, 2, 3
-                elif i == 2:
-                    j_s1, j_s2, j_s3 = i_s1, i_s2, i_s4
-                    k_1, k_2, k_3 = 0, 1, 3
-                elif i == 3:
-                    j_s1, j_s2, j_s3 = i_s1, i_s2, i_s3
-                    k_1, k_2, k_3 = 0, 1, 2
-
-                if not scs[i]:
-                    _lambda2d = self.func_gjk_subdistance_2d(i_b, j_s1, j_s2, j_s3)
-                    closest_point = self.func_simplex_vertex_linear_comb(i_b, 2, j_s1, j_s2, j_s3, 0, _lambda2d, 3)
-                    d = closest_point.dot(closest_point)
-                    if d < dmin:
-                        dmin = d
-                        _lambda.fill(0.0)
-                        _lambda[k_1] = _lambda2d[0]
-                        _lambda[k_2] = _lambda2d[1]
-                        _lambda[k_3] = _lambda2d[2]
-
-        return _lambda
-
-    @ti.func
-    def func_gjk_subdistance_2d(self, i_b, i_s1, i_s2, i_s3):
-
-        _lambda = ti.math.vec4(0, 0, 0, 0)
-
-        # Project origin onto affine hull of the simplex (triangle)
-        proj_o, proj_flag = self.func_project_origin_to_plane(
-            self.gjk_simplex_vertex[i_b, i_s1].mink,
-            self.gjk_simplex_vertex[i_b, i_s2].mink,
-            self.gjk_simplex_vertex[i_b, i_s3].mink,
-        )
-        if proj_flag:
-            # If projection failed because the zero normal,
-            # project on to the first edge of the triangle
-            _lambda = self.func_gjk_subdistance_1d(i_b, i_s1, i_s2)
-        else:
-            # We should find the barycentric coordinates of the projected point,
-            # but the linear system is not square:
-            # [ s1.x, s2.x, s3.x ] [ l1 ] = [ proj_o.x ]
-            # [ s1.y, s2.y, s3.y ] [ l2 ] = [ proj_o.y ]
-            # [ s1.z, s2.z, s3.z ] [ l3 ] = [ proj_o.z ]
-            # [ 1,    1,    1,   ] [ ?  ] = [ 1.0 ]
-            # So we remove one row before solving the system
-            # We exclude the axis with the largest projection of the simplex
-            # using the minors of the above linear system.
-            s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
-            s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
-            s3 = self.gjk_simplex_vertex[i_b, i_s3].mink
-
-            m1 = s2[1] * s3[2] - s2[2] * s3[1] - s1[1] * s3[2] + s1[2] * s3[1] + s1[1] * s2[2] - s1[2] * s2[1]
-            m2 = s2[0] * s3[2] - s2[2] * s3[0] - s1[0] * s3[2] + s1[2] * s3[0] + s1[0] * s2[2] - s1[2] * s2[0]
-            m3 = s2[0] * s3[1] - s2[1] * s3[0] - s1[0] * s3[1] + s1[1] * s3[0] + s1[0] * s2[1] - s1[1] * s2[0]
-
-            m_max = 0.0
-            absm1, absm2, absm3 = ti.abs(m1), ti.abs(m2), ti.abs(m3)
-            s1_2d, s2_2d, s3_2d = gs.ti_vec2(0, 0), gs.ti_vec2(0, 0), gs.ti_vec2(0, 0)
-            proj_o_2d = gs.ti_vec2(0, 0)
-
-            if absm1 >= absm2 and absm1 >= absm3:
-                # Remove first row
-                m_max = m1
-                s1_2d[0] = s1[1]
-                s1_2d[1] = s1[2]
-
-                s2_2d[0] = s2[1]
-                s2_2d[1] = s2[2]
-
-                s3_2d[0] = s3[1]
-                s3_2d[1] = s3[2]
-
-                proj_o_2d[0] = proj_o[1]
-                proj_o_2d[1] = proj_o[2]
-            elif absm2 >= absm1 and absm2 >= absm3:
-                # Remove second row
-                m_max = m2
-                s1_2d[0] = s1[0]
-                s1_2d[1] = s1[2]
-
-                s2_2d[0] = s2[0]
-                s2_2d[1] = s2[2]
-
-                s3_2d[0] = s3[0]
-                s3_2d[1] = s3[2]
-
-                proj_o_2d[0] = proj_o[0]
-                proj_o_2d[1] = proj_o[2]
-            else:
-                # Remove third row
-                m_max = m3
-                s1_2d[0] = s1[0]
-                s1_2d[1] = s1[1]
-
-                s2_2d[0] = s2[0]
-                s2_2d[1] = s2[1]
-
-                s3_2d[0] = s3[0]
-                s3_2d[1] = s3[1]
-
-                proj_o_2d[0] = proj_o[0]
-                proj_o_2d[1] = proj_o[1]
-
-            # Now we find the barycentric coordinates of the projected point
-            # by solving the linear system:
-            # [ s1_2d.x, s2_2d.x, s3_2d.x ] [ l1 ] = [ proj_o_2d.x ]
-            # [ s1_2d.y, s2_2d.y, s3_2d.y ] [ l2 ] = [ proj_o_2d.y ]
-            # [ 1,       1,       1,      ] [ l3 ] = [ 1.0 ]
-
-            # C1 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s2_2d, s3_2d)
-            C1 = (
-                proj_o_2d[0] * s2_2d[1]
-                + proj_o_2d[1] * s3_2d[0]
-                + s2_2d[0] * s3_2d[1]
-                - proj_o_2d[0] * s3_2d[1]
-                - proj_o_2d[1] * s2_2d[0]
-                - s3_2d[0] * s2_2d[1]
-            )
-
-            # C2 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s1_2d, s3_2d)
-            C2 = (
-                proj_o_2d[0] * s3_2d[1]
-                + proj_o_2d[1] * s1_2d[0]
-                + s3_2d[0] * s1_2d[1]
-                - proj_o_2d[0] * s1_2d[1]
-                - proj_o_2d[1] * s3_2d[0]
-                - s1_2d[0] * s3_2d[1]
-            )
-
-            # C3 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s1_2d, s2_2d)
-            C3 = (
-                proj_o_2d[0] * s1_2d[1]
-                + proj_o_2d[1] * s2_2d[0]
-                + s1_2d[0] * s2_2d[1]
-                - proj_o_2d[0] * s2_2d[1]
-                - proj_o_2d[1] * s1_2d[0]
-                - s2_2d[0] * s1_2d[1]
-            )
-
-            Cs = gs.ti_vec3(C1, C2, C3)
-
-            # Compare sign of the cofactors with the determinant
-            scs = gs.ti_ivec3(0, 0, 0)
-            for i in range(3):
-                scs[i] = func_compare_sign(Cs[i], m_max)
-            sc1, sc2, sc3 = scs[0], scs[1], scs[2]
-
-            if sc1 and sc2 and sc3:
-                # If all barycentric coordinates are positive,
-                # the origin is inside the 2-simplex (triangle)
-                _lambda[0] = C1 / m_max
-                _lambda[1] = C2 / m_max
-                _lambda[2] = C3 / m_max
-                _lambda[3] = 0.0
-            else:
-                # Since the origin is outside the 2-simplex (triangle),
-                # we need to find the closest point to the origin
-                dmin = self.FLOAT_MAX
-
-                # Project origin onto edges of the triangle
-                # of which apex point has negative barycentric coordinate
-                for i in range(3):
-                    j_s1, j_s2 = i_s2, i_s3
-                    k_1, k_2 = 1, 2
-                    if i == 1:
-                        j_s1, j_s2 = i_s1, i_s3
-                        k_1, k_2 = 0, 2
-                    elif i == 2:
-                        j_s1, j_s2 = i_s1, i_s2
-                        k_1, k_2 = 0, 1
-
-                    if not scs[i]:
-                        _lambda1d = self.func_gjk_subdistance_1d(i_b, j_s1, j_s2)
-                        closest_point = self.func_simplex_vertex_linear_comb(i_b, 2, j_s1, j_s2, 0, 0, _lambda1d, 2)
-                        d = closest_point.dot(closest_point)
-                        if d < dmin:
-                            dmin = d
-                            _lambda.fill(0.0)
-                            _lambda[k_1] = _lambda1d[0]
-                            _lambda[k_2] = _lambda1d[1]
-
-        return _lambda
-
-    @ti.func
-    def func_gjk_subdistance_1d(self, i_b, i_s1, i_s2):
-
-        _lambda = gs.ti_vec4(0, 0, 0, 0)
-
-        s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
-        s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
-        p_o = self.func_project_origin_to_line(s1, s2)
-
-        mu = s1[0] - s2[0]
-        mu_max = mu
-        index = 0
-
-        mu = s1[1] - s2[1]
-        if ti.abs(mu) >= ti.abs(mu_max):
-            mu_max = mu
-            index = 1
-
-        mu = s1[2] - s2[2]
-        if ti.abs(mu) >= ti.abs(mu_max):
-            mu_max = mu
-            index = 2
-
-        C1 = p_o[index] - s2[index]
-        C2 = s1[index] - p_o[index]
-
-        # Determine if projection of origin lies inside 1-simplex
-        same = func_compare_sign(mu_max, C1) and func_compare_sign(mu_max, C2)
-        if same:
-            _lambda[0] = C1 / mu_max
-            _lambda[1] = C2 / mu_max
-        else:
-            _lambda[0] = 0.0
-            _lambda[1] = 1.0
-
-        return _lambda
-
-    @ti.func
-    def func_simple_gjk_subdistance(self, i_b, n):
-        _lambda = ti.math.vec4(1.0, 0.0, 0.0, 0.0)
-
-        # Whether or not the subdistance was computed
-        # successfully for the n-simplex.
+        # Whether or not the subdistance was computed successfully for the n-simplex.
         flag = 1
 
         dmin = self.FLOAT_MAX
 
         if n == 4:
-            _lambda, flag3d = self.func_simple_gjk_subdistance_3d(i_b, 0, 1, 2, 3)
+            _lambda, flag3d = self.func_gjk_subdistance_3d(i_b, 0, 1, 2, 3)
             flag = flag3d
 
         if (flag == 0) or n == 3:
@@ -910,15 +643,8 @@ class GJK:
                 num_iter = 4
 
             for i in range(num_iter):
-                k_1, k_2, k_3 = 0, 1, 2
-                if i == 1:
-                    k_1, k_2, k_3 = 1, 2, 3
-                elif i == 2:
-                    k_1, k_2, k_3 = 0, 2, 3
-                elif i == 3:
-                    k_1, k_2, k_3 = 0, 1, 3
-
-                _lambda2d, flag2d = self.func_simple_gjk_subdistance_2d(i_b, k_1, k_2, k_3)
+                k_1, k_2, k_3 = i, (i + 1) % 4, (i + 2) % 4
+                _lambda2d, flag2d = self.func_gjk_subdistance_2d(i_b, k_1, k_2, k_3)
 
                 if failed_3d:
                     if flag2d:
@@ -948,19 +674,11 @@ class GJK:
                 num_iter = 3
 
             for i in range(num_iter):
-                k_1, k_2 = 0, 1
-                if i == 1:
-                    k_1, k_2 = 0, 2
-                elif i == 2:
-                    k_1, k_2 = 1, 2
-                elif i == 3:
-                    k_1, k_2 = 0, 3
-                elif i == 4:
-                    k_1, k_2 = 1, 3
-                elif i == 5:
-                    k_1, k_2 = 2, 3
+                k_1, k_2 = i, (i + 1) % 3
+                if i >= 3:
+                    k_1, k_2 = i - 3, 3
 
-                _lambda1d = self.func_simple_gjk_subdistance_1d(i_b, k_1, k_2)
+                _lambda1d = self.func_gjk_subdistance_1d(i_b, k_1, k_2)
 
                 if failed_3d or failed_2d:
                     closest_point = self.func_simplex_vertex_linear_comb(i_b, 2, k_1, k_2, 0, 0, _lambda1d, 2)
@@ -976,19 +694,20 @@ class GJK:
         return _lambda
 
     @ti.func
-    def func_simple_gjk_subdistance_3d(self, i_b, i_s1, i_s2, i_s3, i_s4):
-
+    def func_gjk_subdistance_3d(self, i_b, i_s1, i_s2, i_s3, i_s4):
+        """
+        Compute the barycentric coordinates of the closest point to the origin in the 3-simplex (tetrahedron).
+        """
         flag = 0
         _lambda = gs.ti_vec4(0, 0, 0, 0)
 
         # Simplex vertices
-        s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
-        s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
-        s3 = self.gjk_simplex_vertex[i_b, i_s3].mink
-        s4 = self.gjk_simplex_vertex[i_b, i_s4].mink
+        s1 = self.simplex_vertex[i_b, i_s1].mink
+        s2 = self.simplex_vertex[i_b, i_s2].mink
+        s3 = self.simplex_vertex[i_b, i_s3].mink
+        s4 = self.simplex_vertex[i_b, i_s4].mink
 
-        # Compute the cofactors to find det(M),
-        # which corresponds to the signed volume of the tetrahedron
+        # Compute the cofactors to find det(M), which corresponds to the signed volume of the tetrahedron
         Cs = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for i in range(4):
             v1, v2, v3 = s2, s3, s4
@@ -1009,176 +728,118 @@ class GJK:
         sc1, sc2, sc3, sc4 = scs[0], scs[1], scs[2], scs[3]
 
         if sc1 and sc2 and sc3 and sc4:
-            # If all barycentric coordinates are positive,
-            # the origin is inside the tetrahedron
-            for i in range(4):
-                _lambda[i] = Cs[i] / m_det
+            # If all barycentric coordinates are positive, the origin is inside the tetrahedron
+            _lambda = Cs / m_det
             flag = 1
 
         return _lambda, flag
 
     @ti.func
-    def func_simple_gjk_subdistance_2d(self, i_b, i_s1, i_s2, i_s3):
-
+    def func_gjk_subdistance_2d(self, i_b, i_s1, i_s2, i_s3):
+        """
+        Compute the barycentric coordinates of the closest point to the origin in the 2-simplex (triangle).
+        """
         _lambda = ti.math.vec4(0, 0, 0, 0)
         flag = 0
 
         # Project origin onto affine hull of the simplex (triangle)
-        proj_o, proj_flag = self.func_project_origin_to_plane(
-            self.gjk_simplex_vertex[i_b, i_s1].mink,
-            self.gjk_simplex_vertex[i_b, i_s2].mink,
-            self.gjk_simplex_vertex[i_b, i_s3].mink,
+        proj_orig, proj_flag = self.func_project_origin_to_plane(
+            self.simplex_vertex[i_b, i_s1].mink,
+            self.simplex_vertex[i_b, i_s2].mink,
+            self.simplex_vertex[i_b, i_s3].mink,
         )
 
         if not proj_flag:
-            # We should find the barycentric coordinates of the projected point,
-            # but the linear system is not square:
+            # We should find the barycentric coordinates of the projected point, but the linear system is not square:
             # [ s1.x, s2.x, s3.x ] [ l1 ] = [ proj_o.x ]
             # [ s1.y, s2.y, s3.y ] [ l2 ] = [ proj_o.y ]
             # [ s1.z, s2.z, s3.z ] [ l3 ] = [ proj_o.z ]
             # [ 1,    1,    1,   ] [ ?  ] = [ 1.0 ]
-            # So we remove one row before solving the system
-            # We exclude the axis with the largest projection of the simplex
-            # using the minors of the above linear system.
-            s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
-            s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
-            s3 = self.gjk_simplex_vertex[i_b, i_s3].mink
+            # So we remove one row before solving the system. We exclude the axis with the largest projection of the 
+            # simplex using the minors of the above linear system.
+            s1 = self.simplex_vertex[i_b, i_s1].mink
+            s2 = self.simplex_vertex[i_b, i_s2].mink
+            s3 = self.simplex_vertex[i_b, i_s3].mink
 
-            m1 = s2[1] * s3[2] - s2[2] * s3[1] - s1[1] * s3[2] + s1[2] * s3[1] + s1[1] * s2[2] - s1[2] * s2[1]
-            m2 = s2[0] * s3[2] - s2[2] * s3[0] - s1[0] * s3[2] + s1[2] * s3[0] + s1[0] * s2[2] - s1[2] * s2[0]
-            m3 = s2[0] * s3[1] - s2[1] * s3[0] - s1[0] * s3[1] + s1[1] * s3[0] + s1[0] * s2[1] - s1[1] * s2[0]
+            ms = gs.ti_vec3(
+                s2[1] * s3[2] - s2[2] * s3[1] - s1[1] * s3[2] + s1[2] * s3[1] + s1[1] * s2[2] - s1[2] * s2[1],
+                s2[0] * s3[2] - s2[2] * s3[0] - s1[0] * s3[2] + s1[2] * s3[0] + s1[0] * s2[2] - s1[2] * s2[0],
+                s2[0] * s3[1] - s2[1] * s3[0] - s1[0] * s3[1] + s1[1] * s3[0] + s1[0] * s2[1] - s1[1] * s2[0]
+            )
+            absms = ti.abs(ms)
 
             m_max = 0.0
-            absm1, absm2, absm3 = ti.abs(m1), ti.abs(m2), ti.abs(m3)
             s1_2d, s2_2d, s3_2d = gs.ti_vec2(0, 0), gs.ti_vec2(0, 0), gs.ti_vec2(0, 0)
-            proj_o_2d = gs.ti_vec2(0, 0)
+            proj_orig_2d = gs.ti_vec2(0, 0)
 
-            if absm1 >= absm2 and absm1 >= absm3:
-                # Remove first row
-                m_max = m1
-                s1_2d[0] = s1[1]
-                s1_2d[1] = s1[2]
+            for i in range(3):
+                if absms[i] >= absms[(i + 1) % 3] and absms[i] >= absms[(i + 2) % 3]:
+                    # Remove the i-th row from the linear system
+                    m_max = ms[i]
 
-                s2_2d[0] = s2[1]
-                s2_2d[1] = s2[2]
-
-                s3_2d[0] = s3[1]
-                s3_2d[1] = s3[2]
-
-                proj_o_2d[0] = proj_o[1]
-                proj_o_2d[1] = proj_o[2]
-            elif absm2 >= absm1 and absm2 >= absm3:
-                # Remove second row
-                m_max = m2
-                s1_2d[0] = s1[0]
-                s1_2d[1] = s1[2]
-
-                s2_2d[0] = s2[0]
-                s2_2d[1] = s2[2]
-
-                s3_2d[0] = s3[0]
-                s3_2d[1] = s3[2]
-
-                proj_o_2d[0] = proj_o[0]
-                proj_o_2d[1] = proj_o[2]
-            else:
-                # Remove third row
-                m_max = m3
-                s1_2d[0] = s1[0]
-                s1_2d[1] = s1[1]
-
-                s2_2d[0] = s2[0]
-                s2_2d[1] = s2[1]
-
-                s3_2d[0] = s3[0]
-                s3_2d[1] = s3[1]
-
-                proj_o_2d[0] = proj_o[0]
-                proj_o_2d[1] = proj_o[1]
-
-            # Now we find the barycentric coordinates of the projected point
-            # by solving the linear system:
-            # [ s1_2d.x, s2_2d.x, s3_2d.x ] [ l1 ] = [ proj_o_2d.x ]
-            # [ s1_2d.y, s2_2d.y, s3_2d.y ] [ l2 ] = [ proj_o_2d.y ]
+                    i0, i1 = (i + 1) % 3, (i + 2) % 3
+                    if i == 1:
+                        i0, i1 = i1, i0
+                    
+                    s1_2d[0], s1_2d[1] = s1[i0], s1[i1]
+                    s2_2d[0], s2_2d[1] = s2[i0], s2[i1]
+                    s3_2d[0], s3_2d[1] = s3[i0], s3[i1]
+                    proj_orig_2d[0] = proj_orig[i0]
+                    proj_orig_2d[1] = proj_orig[i1]
+                    break
+            
+            # Now we find the barycentric coordinates of the projected point by solving the linear system:
+            # [ s1_2d.x, s2_2d.x, s3_2d.x ] [ l1 ] = [ proj_orig_2d.x ]
+            # [ s1_2d.y, s2_2d.y, s3_2d.y ] [ l2 ] = [ proj_orig_2d.y ]
             # [ 1,       1,       1,      ] [ l3 ] = [ 1.0 ]
-
-            # C1 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s2_2d, s3_2d)
-            C1 = (
-                proj_o_2d[0] * s2_2d[1]
-                + proj_o_2d[1] * s3_2d[0]
-                + s2_2d[0] * s3_2d[1]
-                - proj_o_2d[0] * s3_2d[1]
-                - proj_o_2d[1] * s2_2d[0]
-                - s3_2d[0] * s2_2d[1]
-            )
-
-            # C2 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s1_2d, s3_2d)
-            C2 = (
-                proj_o_2d[0] * s3_2d[1]
-                + proj_o_2d[1] * s1_2d[0]
-                + s3_2d[0] * s1_2d[1]
-                - proj_o_2d[0] * s1_2d[1]
-                - proj_o_2d[1] * s3_2d[0]
-                - s1_2d[0] * s3_2d[1]
-            )
-
-            # C3 corresponds to the signed area of 2-simplex (triangle): (proj_o_2d, s1_2d, s2_2d)
-            C3 = (
-                proj_o_2d[0] * s1_2d[1]
-                + proj_o_2d[1] * s2_2d[0]
-                + s1_2d[0] * s2_2d[1]
-                - proj_o_2d[0] * s2_2d[1]
-                - proj_o_2d[1] * s1_2d[0]
-                - s2_2d[0] * s1_2d[1]
-            )
-
-            Cs = gs.ti_vec3(C1, C2, C3)
-
+            cs = gs.ti_vec3(0, 0, 0)
+            for i in range(3):
+                s2d0, s2d1 = s2_2d, s3_2d
+                if i == 1:
+                    s2d0, s2d1 = s3_2d, s1_2d
+                elif i == 2:
+                    s2d0, s2d1 = s1_2d, s2_2d
+                # Corresponds to the signed area of 2-simplex (triangle): (proj_orig_2d, s2d0, s2d1)
+                cs[i] = (proj_orig_2d[0] * s2d0[1] + proj_orig_2d[1] * s2d1[0] + s2d0[0] * s2d1[1] - \
+                        proj_orig_2d[0] * s2d1[1] - proj_orig_2d[1] * s2d0[0] - s2d1[0] * s2d0[1])
+             
             # Compare sign of the cofactors with the determinant
             scs = gs.ti_ivec3(0, 0, 0)
             for i in range(3):
-                scs[i] = func_compare_sign(Cs[i], m_max)
+                scs[i] = func_compare_sign(cs[i], m_max)
             
             if scs.all():
-                # If all barycentric coordinates are positive,
-                # the origin is inside the 2-simplex (triangle)
-                _lambda[0] = C1 / m_max
-                _lambda[1] = C2 / m_max
-                _lambda[2] = C3 / m_max
-                _lambda[3] = 0.0
+                # If all barycentric coordinates are positive, the origin is inside the 2-simplex (triangle)
+                for i in ti.static(range(3)):
+                    _lambda[i] = cs[i] / m_max
                 flag = 1
 
         return _lambda, flag
 
     @ti.func
-    def func_simple_gjk_subdistance_1d(self, i_b, i_s1, i_s2):
-
+    def func_gjk_subdistance_1d(self, i_b, i_s1, i_s2):
+        """
+        Compute the barycentric coordinates of the closest point to the origin in the 1-simplex (line segment).
+        """
         _lambda = gs.ti_vec4(0, 0, 0, 0)
 
-        s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
-        s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
+        s1 = self.simplex_vertex[i_b, i_s1].mink
+        s2 = self.simplex_vertex[i_b, i_s2].mink
         p_o = self.func_project_origin_to_line(s1, s2)
 
-        mu = s1[0] - s2[0]
-        mu_max = mu
-        index = 0
-
-        mu = s1[1] - s2[1]
-        if ti.abs(mu) >= ti.abs(mu_max):
-            mu_max = mu
-            index = 1
-
-        mu = s1[2] - s2[2]
-        if ti.abs(mu) >= ti.abs(mu_max):
-            mu_max = mu
-            index = 2
+        mu_max = 0.0
+        index = -1
+        for i in range(3):
+            mu = s1[i] - s2[i]
+            if ti.abs(mu) >= ti.abs(mu_max):
+                mu_max = mu
+                index = i
 
         C1 = p_o[index] - s2[index]
         C2 = s1[index] - p_o[index]
 
         # Determine if projection of origin lies inside 1-simplex
-        same = func_compare_sign(mu_max, C1) and func_compare_sign(mu_max, C2)
-        if same:
+        if func_compare_sign(mu_max, C1) and func_compare_sign(mu_max, C2):
             _lambda[0] = C1 / mu_max
             _lambda[1] = C2 / mu_max
         else:
@@ -1190,8 +851,9 @@ class GJK:
     @ti.func
     def func_epa(self, i_ga, i_gb, i_b):
         """
-        Run EPA algorithm for finding the face on the expanded
-        polytope that best approximates the penetration depth.
+        EPA algorithm to find the exact penetration depth and contact normal using the simplex constructed by GJK.
+        This implementation is based on the MuJoCo implementation, which can be found here:
+        https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L1331
         """
         upper = self.FLOAT_MAX
         upper2 = self.FLOAT_MAX_SQ
@@ -1203,7 +865,7 @@ class GJK:
         prev_nearest_i_f = -1
 
         discrete = self.func_is_discrete_geoms(i_ga, i_gb, i_b)
-        if discrete and gs.ti_float == ti.f64:
+        if discrete:
             # If the objects are discrete, we do not use tolerance.
             tolerance = self.FLOAT_MIN
 
@@ -1218,19 +880,17 @@ class GJK:
                 i_f = self.polytope_faces_map[i_b][i]
                 face_dist2 = self.polytope_faces[i_b, i_f].dist2
 
-                if (i == 0) or (face_dist2 < lower2):
+                if (face_dist2 < lower2):
                     lower2 = face_dist2
                     nearest_i_f = i_f
 
             if lower2 > upper2 or nearest_i_f < 0:
-                # Invalid face found, stop the algorithm
-                # (lower bound of depth is larger than upper bound)
+                # Invalid face found, stop the algorithm (lower bound of depth is larger than upper bound)
                 nearest_i_f = prev_nearest_i_f
                 break
 
-            if lower2 <= 0:
-                # Invalid lower bound (0), stop the algorithm
-                # (origin is on the affine hull of face)
+            if lower2 <= self.FLOAT_MIN:
+                # Invalid lower bound (0), stop the algorithm (origin is on the affine hull of face)
                 break
 
             # Find a new support point w from the nearest face's normal
@@ -1243,14 +903,12 @@ class GJK:
             upper_k = w.dot(dir) / lower
             if upper_k < upper:
                 upper = upper_k
-                upper2 = upper * upper
+                upper2 = upper ** 2
 
-            # If the upper bound and lower bound are close enough,
-            # we can stop the algorithm
+            # If the upper bound and lower bound are close enough, we can stop the algorithm
             if (upper - lower) < tolerance:
                 break
 
-            # @TODO: Check the vertex w is already in the polytope
             if discrete:
                 repeated = False
                 for i in range(self.polytope[i_b].nverts - 1):
@@ -1271,14 +929,12 @@ class GJK:
             horizon_flag = self.func_epa_horizon(i_b, nearest_i_f)
 
             if horizon_flag:
-                # There was an error in the horizon construction,
-                # so the horizon edge is not a closed loop.
+                # There was an error in the horizon construction, so the horizon edge is not a closed loop.
                 nearest_i_f = -1
                 break
 
             if self.polytope[i_b].horizon_nedges < 3:
-                # Should not happen, because at least one face is deleted
-                # and thus at least three edges should be in the horizon.
+                # Should not happen, because at least three edges should be in the horizon from one deleted face.
                 nearest_i_f = -1
                 break
 
@@ -1305,9 +961,8 @@ class GJK:
                 # Change the adjacent face index of the existing face
                 self.polytope_faces[i_b, horizon_i_f].adj_idx[horizon_i_e] = i_f0
 
-                # Attach the new face
-                # If this if the first face, will be adjacent to
-                # the face that will be attached last
+                # Attach the new face.
+                # If this if the first face, will be adjacent to the face that will be attached last.
                 adj_i_f_0 = i_f0 - 1 if (i > 0) else nfaces + nedges - 1
                 adj_i_f_1 = horizon_i_f
                 adj_i_f_2 = i_f1
@@ -1317,11 +972,9 @@ class GJK:
                     wi,
                     horizon_v2,
                     horizon_v1,
-                    # Previous face id
-                    adj_i_f_2,
+                    adj_i_f_2,  # Previous face id
                     adj_i_f_1,
-                    # Next face id
-                    adj_i_f_0,
+                    adj_i_f_0,  # Next face id
                 )
                 if dist2 <= 0:
                     # Unrecoverable numerical issue
@@ -1394,9 +1047,8 @@ class GJK:
     @ti.func
     def func_epa_horizon(self, i_b, nearest_i_f):
         """
-        Compute the horizon, which represents the area of the polytope
-        that is visible from the vertex w, and thus should be deleted
-        for the expansion of the polytope.
+        Compute the horizon, which represents the area of the polytope that is visible from the vertex w, and thus 
+        should be deleted for the expansion of the polytope.
         """
         w = self.polytope[i_b].horizon_w
 
@@ -1408,7 +1060,6 @@ class GJK:
 
         flag = 0
         while top > 0:
-
             # Pop the top face from the stack
             i_f = self.polytope_horizon_stack[i_b, top - 1].face_idx
             i_e = self.polytope_horizon_stack[i_b, top - 1].edge_idx
@@ -1421,48 +1072,36 @@ class GJK:
 
             face = self.polytope_faces[i_b, i_f]
 
-            # Check visibility of the face.
-            # Two requirements for the face to be visible:
+            # Check visibility of the face. Two requirements for the face to be visible:
             # 1. The face normal should point towards the vertex w
-            # 2. The vertex w should be on the other side of the face
-            #    to the origin
+            # 2. The vertex w should be on the other side of the face to the origin
             is_visible = face.normal.dot(w) - face.dist2 > self.FLOAT_MIN
 
-            # The first face is always visible.
-            is_visible = is_visible or is_first
-
-            if is_visible:
-
+            # The first face is always considered visible.
+            if is_visible or is_first:
                 # If visible, delete the face from the polytope
                 self.func_delete_face_from_polytope(i_b, i_f)
 
-                # If it is the first face, we need to add the three edges.
-                k_beg = 0 if is_first else 1
-
-                # Add the other two or three edges of the face to the stack.
+                # Add the other two or three edges of the face to the stack. 
                 # The order is important to form a closed loop.
-                for k in range(k_beg, 3):
+                for k in range(0 if is_first else 1, 3):
                     i_e2 = (i_e + k) % 3
                     adj_face_idx = face.adj_idx[i_e2]
                     adj_face_is_deleted = self.polytope_faces[i_b, adj_face_idx].map_idx == -2
                     if not adj_face_is_deleted:
-                        # Get the related edge id from the adjacent face.
-                        # Since adjacent faces have different orientations,
-                        # we need to use the ending vertex of the edge.
+                        # Get the related edge id from the adjacent face. Since adjacent faces have different 
+                        # orientations, we need to use the ending vertex of the edge.
                         start_vert_idx = face.verts_idx[(i_e2 + 1) % 3]
                         adj_edge_idx = self.func_get_edge_idx(i_b, adj_face_idx, start_vert_idx)
 
                         self.polytope_horizon_stack[i_b, top].face_idx = adj_face_idx
                         self.polytope_horizon_stack[i_b, top].edge_idx = adj_edge_idx
                         top += 1
-
             else:
-
                 # If not visible, add the edge to the horizon.
                 flag = self.func_add_edge_to_horizon(i_b, i_f, i_e)
                 if flag:
-                    # If the edges do not form a closed loop,
-                    # there is an error in the algorithm.
+                    # If the edges do not form a closed loop, there is an error in the algorithm.
                     break
 
             is_first = False
@@ -1471,6 +1110,9 @@ class GJK:
 
     @ti.func
     def func_add_edge_to_horizon(self, i_b, i_f, i_e):
+        """
+        Add an edge to the horizon data structure.
+        """
         horizon_nedges = self.polytope[i_b].horizon_nedges
         self.polytope_horizon_data[i_b, horizon_nedges].edge_idx = i_e
         self.polytope_horizon_data[i_b, horizon_nedges].face_idx = i_f
@@ -1482,16 +1124,13 @@ class GJK:
     @ti.func
     def func_get_edge_idx(self, i_b, i_f, i_v):
         """
-        Get the edge index from the face, starting from the vertex i_v.
-        If the face is comprised of [v1, v2, v3], the edges are:
-        [v1, v2], [v2, v3], [v3, v1].
-
-        Therefore, if i_v is v1, the edge index is 0,
-        and if i_v is v2, the edge index is 1,
-        and if i_v is v3, the edge index is 2.
+        Get the edge index from the face, starting from the vertex i_v. 
+        
+        If the face is comprised of [v1, v2, v3], the edges are: [v1, v2], [v2, v3], [v3, v1].
+        Therefore, if i_v was v1, the edge index is 0, and if i_v was v2, the edge index is 1.
         """
         verts = self.polytope_faces[i_b, i_f].verts_idx
-        ret = 2
+        ret = gs.ti_int(2)
         if verts[0] == i_v:
             ret = 0
         elif verts[1] == i_v:
@@ -1535,27 +1174,27 @@ class GJK:
     def func_epa_init_polytope_2d(self, i_ga, i_gb, i_b):
         """
         Create the polytope for EPA from a 1-simplex (line segment).
+
         Return 0 when successful.
         """
         flag = 0
 
         # Get the simplex vertices
-        v1 = self.gjk_simplex_vertex[i_b, 0].mink
-        v2 = self.gjk_simplex_vertex[i_b, 1].mink
+        v1 = self.simplex_vertex[i_b, 0].mink
+        v2 = self.simplex_vertex[i_b, 1].mink
         diff = v2 - v1
 
-        # Find the element in [diff] with the smallest magnitude,
-        # because it will give us the largest cross product below
+        # Find the element in [diff] with the smallest magnitude, because it will give us the largest cross product
         min_val = ti.abs(diff[0])
         min_i = 0
-        for i in range(1, 3):
-            if ti.abs(diff[i]) < min_val:
-                min_val = ti.abs(diff[i])
+        for i in ti.static(range(1, 3)):
+            abs_diff_i = ti.abs(diff[i])
+            if abs_diff_i < min_val:
+                min_val = abs_diff_i
                 min_i = i
 
-        # Cross product with the found axis,
-        # then rotate it by 120 degrees around the axis [diff]
-        # to get three more points spaced 120 degrees apart
+        # Cross product with the found axis, then rotate it by 120 degrees around the axis [diff] to get three more 
+        # points spaced 120 degrees apart
         rotmat = self.func_rotmat_120(diff)
         e = gs.ti_vec3(0.0, 0.0, 0.0)
         e[min_i] = 1.0
@@ -1573,15 +1212,14 @@ class GJK:
         for i in range(2):
             vi[i] = self.func_epa_insert_vertex_to_polytope(
                 i_b,
-                self.gjk_simplex_vertex[i_b, i].obj1,
-                self.gjk_simplex_vertex[i_b, i].obj2,
-                self.gjk_simplex_vertex[i_b, i].id1,
-                self.gjk_simplex_vertex[i_b, i].id2,
-                self.gjk_simplex_vertex[i_b, i].mink,
+                self.simplex_vertex[i_b, i].obj1,
+                self.simplex_vertex[i_b, i].obj2,
+                self.simplex_vertex[i_b, i].id1,
+                self.simplex_vertex[i_b, i].id2,
+                self.simplex_vertex[i_b, i].mink,
             )
 
-        # Find three more vertices using [d1, d2, d3] as support vectors,
-        # and insert them into the polytope
+        # Find three more vertices using [d1, d2, d3] as support vectors, and insert them into the polytope
         for i in range(3):
             di = gs.ti_vec3(d[i, 0], d[i, 1], d[i, 2])
             di_norm = ti.math.length(di)
@@ -1592,13 +1230,11 @@ class GJK:
         v5 = self.polytope_verts[i_b, vi[4]].mink
 
         # Build hexahedron (6 faces) from the five vertices.
-        # * This hexahedron would have line [v1, v2] as the central axis,
-        # and the other three vertices would be on the sides of the hexahedron,
-        # as they are spaced 120 degrees apart.
+        # * This hexahedron would have line [v1, v2] as the central axis, and the other three vertices would be on the 
+        # sides of the hexahedron, as they are spaced 120 degrees apart.
         # * We already know the face and adjacent face indices in building this.
-        # * While building the hexahedron by attaching faces, if the face is very
-        # close to the origin, we replace the 1-simplex with the 2-simplex,
-        # and restart from it.
+        # * While building the hexahedron by attaching faces, if the face is very close to the origin, we replace the 
+        # 1-simplex with the 2-simplex, and restart from it.
 
         # Vertex indices for the faces in the hexahedron
         i_vs = ti.Matrix(
@@ -1627,8 +1263,7 @@ class GJK:
 
         if flag == 0:
             if not self.func_ray_triangle_intersection(v1, v2, v3, v4, v5):
-                # The hexahedron should be convex by definition,
-                # but somehow if it is not, we return non-convex flag
+                # The hexahedron should be convex by definition, but somehow if it is not, we return non-convex flag
                 flag = EPA_RETURN_CODE.P2_NONCONVEX
 
         if flag == 0:
@@ -1649,9 +1284,9 @@ class GJK:
         flag = 0
 
         # Get the simplex vertices
-        v1 = self.gjk_simplex_vertex[i_b, 0].mink
-        v2 = self.gjk_simplex_vertex[i_b, 1].mink
-        v3 = self.gjk_simplex_vertex[i_b, 2].mink
+        v1 = self.simplex_vertex[i_b, 0].mink
+        v2 = self.simplex_vertex[i_b, 1].mink
+        v3 = self.simplex_vertex[i_b, 2].mink
 
         # Get normal; if it is zero, we cannot proceed
         edge1 = v2 - v1
@@ -1667,11 +1302,11 @@ class GJK:
         for i in range(3):
             vi[i] = self.func_epa_insert_vertex_to_polytope(
                 i_b,
-                self.gjk_simplex_vertex[i_b, i].obj1,
-                self.gjk_simplex_vertex[i_b, i].obj2,
-                self.gjk_simplex_vertex[i_b, i].id1,
-                self.gjk_simplex_vertex[i_b, i].id2,
-                self.gjk_simplex_vertex[i_b, i].mink,
+                self.simplex_vertex[i_b, i].obj1,
+                self.simplex_vertex[i_b, i].obj2,
+                self.simplex_vertex[i_b, i].id1,
+                self.simplex_vertex[i_b, i].id2,
+                self.simplex_vertex[i_b, i].mink,
             )
 
         # Find the fourth and fifth vertices using the normal
@@ -1705,7 +1340,7 @@ class GJK:
             # In that case, the hexahedron could possibly be constructed
             # that does ont contain the origin, but there is penetration depth.
             if (
-                self.gjk_simplex[i_b].dist > 10 * self.FLOAT_MIN
+                self.simplex[i_b].dist > 10 * self.FLOAT_MIN
                 and (not tets_has_origin[0])
                 and (not tets_has_origin[1])
             ):
@@ -1759,11 +1394,11 @@ class GJK:
         for i in range(4):
             vi[i] = self.func_epa_insert_vertex_to_polytope(
                 i_b,
-                self.gjk_simplex_vertex[i_b, i].obj1,
-                self.gjk_simplex_vertex[i_b, i].obj2,
-                self.gjk_simplex_vertex[i_b, i].id1,
-                self.gjk_simplex_vertex[i_b, i].id2,
-                self.gjk_simplex_vertex[i_b, i].mink,
+                self.simplex_vertex[i_b, i].obj1,
+                self.simplex_vertex[i_b, i].obj2,
+                self.simplex_vertex[i_b, i].id1,
+                self.simplex_vertex[i_b, i].id2,
+                self.simplex_vertex[i_b, i].mink,
             )
 
         # If origin is on any face of the tetrahedron,
@@ -1880,10 +1515,10 @@ class GJK:
         Replace the simplex with a 2-simplex (triangle) from polytope vertices.
         [i_v1, i_v2, i_v3] are the vertices that we will use from the polytope.
         """
-        self.gjk_simplex[i_b].nverts = 3
-        self.gjk_simplex_vertex[i_b, 0] = self.polytope_verts[i_b, i_v1]
-        self.gjk_simplex_vertex[i_b, 1] = self.polytope_verts[i_b, i_v2]
-        self.gjk_simplex_vertex[i_b, 2] = self.polytope_verts[i_b, i_v3]
+        self.simplex[i_b].nverts = 3
+        self.simplex_vertex[i_b, 0] = self.polytope_verts[i_b, i_v1]
+        self.simplex_vertex[i_b, 1] = self.polytope_verts[i_b, i_v2]
+        self.simplex_vertex[i_b, 2] = self.polytope_verts[i_b, i_v3]
 
         # Reset polytope
         self.polytope[i_b].nverts = 0
@@ -2079,6 +1714,16 @@ class GJK:
 
     @ti.func
     def func_multi_contact(self, i_ga, i_gb, i_b, i_f):
+        """
+        Multi-contact detection algorithm based on Sutherland-Hodgman polygon clipping algorithm. For the two geometric
+        entities that form the minimum distance (e.g. face-face, edge-face), this function tests if the pair is 
+        parallel, and if so, it clips one of the pair against the other to find the contact points.
+
+        Parameters
+        ----------
+        i_f: int
+            Index of the face in the EPA polytope where the minimum distance is found.
+        """
         # Get vertices of the nearest face from EPA
         v11i = self.polytope_verts[i_b, self.polytope_faces[i_b, i_f].verts_idx[0]].id1
         v12i = self.polytope_verts[i_b, self.polytope_faces[i_b, i_f].verts_idx[1]].id1
@@ -2130,12 +1775,12 @@ class GJK:
 
             for i_n in range(nnorms):
                 if i_g0 == 0:
-                    self.multi_contact_faces[i_b, i_n].normal1 = self.multi_contact_normals[i_b, i_n].normal
-                    self.multi_contact_faces[i_b, i_n].id1 = self.multi_contact_normals[i_b, i_n].id
+                    self.contact_faces[i_b, i_n].normal1 = self.contact_normals[i_b, i_n].normal
+                    self.contact_faces[i_b, i_n].id1 = self.contact_normals[i_b, i_n].id
                     nnorms1 = nnorms
                 else:
-                    self.multi_contact_faces[i_b, i_n].normal2 = self.multi_contact_normals[i_b, i_n].normal
-                    self.multi_contact_faces[i_b, i_n].id2 = self.multi_contact_normals[i_b, i_n].id
+                    self.contact_faces[i_b, i_n].normal2 = self.contact_normals[i_b, i_n].normal
+                    self.contact_faces[i_b, i_n].id2 = self.contact_normals[i_b, i_n].id
                     nnorms2 = nnorms
 
         # Determine if any two face normals match
@@ -2179,11 +1824,11 @@ class GJK:
                 if nnorms > 0:
                     for i_n in range(nnorms):
                         if is_edge_face:
-                            self.multi_contact_faces[i_b, i_n].normal1 = self.multi_contact_normals[i_b, i_n].normal
+                            self.contact_faces[i_b, i_n].normal1 = self.contact_normals[i_b, i_n].normal
                         else:
-                            self.multi_contact_faces[i_b, i_n].normal2 = self.multi_contact_normals[i_b, i_n].normal
+                            self.contact_faces[i_b, i_n].normal2 = self.contact_normals[i_b, i_n].normal
 
-                        self.multi_contact_faces[i_b, i_n].endverts = self.multi_contact_normals[i_b, i_n].endverts
+                        self.contact_faces[i_b, i_n].endverts = self.contact_normals[i_b, i_n].endverts
 
                 # Check if any of the edge normals match
                 nedges, nfaces = nnorms1, nnorms2
@@ -2217,24 +1862,24 @@ class GJK:
                 nface = 0
                 if edgecon:
                     if k == 0:
-                        self.multi_contact_faces[i_b, 0].face1 = self.polytope_verts[
+                        self.contact_faces[i_b, 0].face1 = self.polytope_verts[
                             i_b, self.polytope_faces[i_b, i_f].verts_idx[0]
                         ].obj1
-                        self.multi_contact_faces[i_b, 1].face1 = self.multi_contact_faces[i_b, i].endverts
+                        self.contact_faces[i_b, 1].face1 = self.contact_faces[i_b, i].endverts
                     else:
-                        self.multi_contact_faces[i_b, 0].face2 = self.polytope_verts[
+                        self.contact_faces[i_b, 0].face2 = self.polytope_verts[
                             i_b, self.polytope_faces[i_b, i_f].verts_idx[0]
                         ].obj2
-                        self.multi_contact_faces[i_b, 1].face2 = self.multi_contact_faces[i_b, j].endverts
+                        self.contact_faces[i_b, 1].face2 = self.contact_faces[i_b, j].endverts
 
                     nface = 2
                 else:
-                    normal_face_idx = self.multi_contact_faces[i_b, i].id1
+                    normal_face_idx = self.contact_faces[i_b, i].id1
                     if k == 0 and edgecon2:
                         # Since [i] is the edge idx, use [j]
-                        normal_face_idx = self.multi_contact_faces[i_b, j].id1
+                        normal_face_idx = self.contact_faces[i_b, j].id1
                     elif k == 1:
-                        normal_face_idx = self.multi_contact_faces[i_b, j].id2
+                        normal_face_idx = self.contact_faces[i_b, j].id2
 
                     if geom_type == gs.GEOM_TYPE.BOX:
                         nface = self.func_box_face(i_g, i_b, k, normal_face_idx)
@@ -2250,16 +1895,16 @@ class GJK:
             normal = gs.ti_vec3(0.0, 0.0, 0.0)
             if edgecon1:
                 # Face 1 is an edge, so clip face 1 against face 2
-                approx_dir = self.multi_contact_faces[i_b, j].normal2 * ti.math.length(dir)
-                normal = self.multi_contact_faces[i_b, j].normal2
+                approx_dir = self.contact_faces[i_b, j].normal2 * ti.math.length(dir)
+                normal = self.contact_faces[i_b, j].normal2
             elif edgecon2:
                 # Face 2 is an edge, so clip face 2 against face 1
-                approx_dir = self.multi_contact_faces[i_b, j].normal1 * (-ti.math.length(dir))
-                normal = self.multi_contact_faces[i_b, j].normal1
+                approx_dir = self.contact_faces[i_b, j].normal1 * (-ti.math.length(dir))
+                normal = self.contact_faces[i_b, j].normal1
             else:
                 # Face-face contact
-                approx_dir = self.multi_contact_faces[i_b, j].normal2 * ti.math.length(dir)
-                normal = self.multi_contact_faces[i_b, i].normal1
+                approx_dir = self.contact_faces[i_b, j].normal2 * ti.math.length(dir)
+                normal = self.contact_faces[i_b, i].normal1
 
             # Clip polygon
             self.func_clip_polygon(i_b, nface1, nface2, edgecon1, edgecon2, normal, approx_dir)
@@ -2272,7 +1917,6 @@ class GJK:
         If two points are the same, 2-dim.
         If all points are different, 3-dim.
         """
-        flag = 0
         dim = 0
         rv1i, rv2i, rv3i = v1i, v2i, v3i
         rv1, rv2, rv3 = v1, v2, v3
@@ -2356,48 +2000,48 @@ class GJK:
             global_n = gu.ti_transform_by_quat(local_n, g_quat)
 
             if dim == 3:
-                self.multi_contact_normals[i_b, 0].normal = global_n
+                self.contact_normals[i_b, 0].normal = global_n
 
                 # Note that only one of [x, y, z] could be non-zero,
                 # because the triangle is on the box face.
                 sgn = x + y + z
                 if x:
-                    self.multi_contact_normals[i_b, c].id = 0
+                    self.contact_normals[i_b, c].id = 0
                     c += 1
                 if y:
-                    self.multi_contact_normals[i_b, c].id = 2
+                    self.contact_normals[i_b, c].id = 2
                     c += 1
                 if z:
-                    self.multi_contact_normals[i_b, c].id = 4
+                    self.contact_normals[i_b, c].id = 4
                     c += 1
 
                 if sgn == -1:
                     # Flip if needed
-                    self.multi_contact_normals[i_b, 0].id = self.multi_contact_normals[i_b, 0].id + 1
+                    self.contact_normals[i_b, 0].id = self.contact_normals[i_b, 0].id + 1
 
             elif dim == 2:
                 if w:
                     if (i == 0) or (i == 1):
-                        self.multi_contact_normals[i_b, c].normal = global_n
+                        self.contact_normals[i_b, c].normal = global_n
                     else:
-                        self.multi_contact_normals[i_b, 1].normal = global_n
+                        self.contact_normals[i_b, 1].normal = global_n
 
                     if i == 0:
-                        self.multi_contact_normals[i_b, c].id = 0 if x > 0 else 1
+                        self.contact_normals[i_b, c].id = 0 if x > 0 else 1
                     elif i == 1:
-                        self.multi_contact_normals[i_b, c].id = 2 if y > 0 else 3
+                        self.contact_normals[i_b, c].id = 2 if y > 0 else 3
                     elif i == 2:
-                        self.multi_contact_normals[i_b, c].id = 4 if z > 0 else 5
+                        self.contact_normals[i_b, c].id = 4 if z > 0 else 5
                     c += 1
 
             elif dim == 1:
-                self.multi_contact_normals[i_b, c].normal = global_n
+                self.contact_normals[i_b, c].normal = global_n
                 if i == 0:
-                    self.multi_contact_normals[i_b, c].id = 0 if x > 0 else 1
+                    self.contact_normals[i_b, c].id = 0 if x > 0 else 1
                 elif i == 1:
-                    self.multi_contact_normals[i_b, c].id = 2 if y > 0 else 3
+                    self.contact_normals[i_b, c].id = 2 if y > 0 else 3
                 elif i == 2:
-                    self.multi_contact_normals[i_b, c].id = 4 if z > 0 else 5
+                    self.contact_normals[i_b, c].id = 4 if z > 0 else 5
                 c += 1
 
         # Check [c] for detecting degenerate cases
@@ -2477,10 +2121,10 @@ class GJK:
         flag = 0
         for i in range(6):
             n = gs.ti_vec3(normals[3 * i + 0], normals[3 * i + 1], normals[3 * i + 2])
-            if local_dir.dot(n) > self.face_tol:
+            if local_dir.dot(n) > self.contact_face_tol:
                 flag = 1
-                self.multi_contact_normals[i_b, 0].normal = n
-                self.multi_contact_normals[i_b, 0].id = i
+                self.contact_normals[i_b, 0].normal = n
+                self.contact_normals[i_b, 0].id = i
                 break
 
         return flag
@@ -2542,21 +2186,21 @@ class GJK:
                 n = gu.ti_transform_by_quat(n, g_quat)
 
                 if dim == 3:
-                    self.multi_contact_normals[i_b, 0].normal = n
-                    self.multi_contact_normals[i_b, 0].id = i_f
+                    self.contact_normals[i_b, 0].normal = n
+                    self.contact_normals[i_b, 0].id = i_f
                     n_normals = 1
                     break
                 elif dim == 2:
-                    self.multi_contact_normals[i_b, n_normals].normal = n
-                    self.multi_contact_normals[i_b, n_normals].id = i_f
+                    self.contact_normals[i_b, n_normals].normal = n
+                    self.contact_normals[i_b, n_normals].id = i_f
                     n_normals += 1
                     if n_normals == 2:
                         break
                 else:
-                    self.multi_contact_normals[i_b, n_normals].normal = n
-                    self.multi_contact_normals[i_b, n_normals].id = i_f
+                    self.contact_normals[i_b, n_normals].normal = n
+                    self.contact_normals[i_b, n_normals].id = i_f
                     n_normals += 1
-                    if n_normals == self.max_polygon_verts:
+                    if n_normals == self.max_contact_polygon_verts:
                         break
 
         return n_normals
@@ -2564,16 +2208,16 @@ class GJK:
     @ti.func
     def func_find_aligned_faces(self, i_b, nv, nw):
         """
-        Find if any two faces from [multi_contact_faces] are aligned.
+        Find if any two faces from [contact_faces] are aligned.
         """
         res = gs.ti_ivec2(0, 0)
         flag = 0
 
         for i in range(nv):
-            ni = self.multi_contact_faces[i_b, i].normal1
+            ni = self.contact_faces[i_b, i].normal1
             for j in range(nw):
-                nj = self.multi_contact_faces[i_b, j].normal2
-                if ni.dot(nj) < -self.face_tol:
+                nj = self.contact_faces[i_b, j].normal2
+                if ni.dot(nj) < -self.contact_face_tol:
                     res[0] = i
                     res[1] = j
                     flag = 1
@@ -2610,8 +2254,8 @@ class GJK:
 
         if dim == 2:
             # If the nearest face is an edge
-            self.multi_contact_normals[i_b, 0].endverts = v2
-            self.multi_contact_normals[i_b, 0].normal = self.func_safe_normalize(v2 - v1)
+            self.contact_normals[i_b, 0].endverts = v2
+            self.contact_normals[i_b, 0].normal = self.func_safe_normalize(v2 - v1)
 
             n_normals = 1
         elif dim == 1:
@@ -2629,8 +2273,8 @@ class GJK:
                 ev = gu.ti_transform_by_trans_quat(bv, g_pos, g_quat)
                 r = self.func_safe_normalize(ev - v1)
 
-                self.multi_contact_normals[i_b, i].endverts = ev
-                self.multi_contact_normals[i_b, i].normal = r
+                self.contact_normals[i_b, i].endverts = ev
+                self.contact_normals[i_b, i].normal = r
 
             n_normals = 3
 
@@ -2659,8 +2303,8 @@ class GJK:
 
         if dim == 2:
             # If the nearest face is an edge
-            self.multi_contact_normals[i_b, 0].endverts = v2
-            self.multi_contact_normals[i_b, 0].normal = self.func_safe_normalize(v2 - v1)
+            self.contact_normals[i_b, 0].endverts = v2
+            self.contact_normals[i_b, 0].normal = self.func_safe_normalize(v2 - v1)
 
             n_normals = 1
 
@@ -2690,11 +2334,11 @@ class GJK:
                     v2_pos = gu.ti_transform_by_trans_quat(v2_pos, g_pos, g_quat)
                     t_res = self.func_safe_normalize(v2_pos - v1)
 
-                    self.multi_contact_normals[i_b, n_normals].normal = t_res
-                    self.multi_contact_normals[i_b, n_normals].endverts = v2_pos
+                    self.contact_normals[i_b, n_normals].normal = t_res
+                    self.contact_normals[i_b, n_normals].endverts = v2_pos
 
                     n_normals += 1
-                    if n_normals == self.max_polygon_verts:
+                    if n_normals == self.max_contact_polygon_verts:
                         break
 
         return n_normals
@@ -2720,24 +2364,24 @@ class GJK:
     @ti.func
     def func_find_aligned_edge_face(self, i_b, nedge, nface, is_edge_face):
         """
-        Find if an edge and face from [multi_contact_faces] are aligned.
+        Find if an edge and face from [contact_faces] are aligned.
         """
         res = gs.ti_ivec2(0, 0)
         flag = 0
 
         for i in range(nedge):
-            ni = self.multi_contact_faces[i_b, i].normal1
+            ni = self.contact_faces[i_b, i].normal1
             if not is_edge_face:
                 # The second normal is the edge normal
-                ni = self.multi_contact_faces[i_b, i].normal2
+                ni = self.contact_faces[i_b, i].normal2
 
             for j in range(nface):
-                nj = self.multi_contact_faces[i_b, j].normal2
+                nj = self.contact_faces[i_b, j].normal2
                 if not is_edge_face:
                     # The first normal is the face normal
-                    nj = self.multi_contact_faces[i_b, j].normal1
+                    nj = self.contact_faces[i_b, j].normal1
 
-                if ti.abs(ni.dot(nj)) < self.edge_tol:
+                if ti.abs(ni.dot(nj)) < self.contact_edge_tol:
                     res[0] = i
                     res[1] = j
                     flag = 1
@@ -2808,9 +2452,9 @@ class GJK:
             v = gs.ti_vec3(vs[3 * i + 0], vs[3 * i + 1], vs[3 * i + 2]) * 0.5
             v = gu.ti_transform_by_trans_quat(v, g_pos, g_quat)
             if i_o == 0:
-                self.multi_contact_faces[i_b, i].face1 = v
+                self.contact_faces[i_b, i].face1 = v
             else:
-                self.multi_contact_faces[i_b, i].face2 = v
+                self.contact_faces[i_b, i].face2 = v
 
         return nface
 
@@ -2830,9 +2474,9 @@ class GJK:
             v = self._solver.verts_info[i_v].init_pos
             v = gu.ti_transform_by_trans_quat(v, g_pos, g_quat)
             if i_o == 0:
-                self.multi_contact_faces[i_b, i].face1 = v
+                self.contact_faces[i_b, i].face1 = v
             else:
-                self.multi_contact_faces[i_b, i].face2 = v
+                self.contact_faces[i_b, i].face2 = v
 
         return nvert
 
@@ -2853,14 +2497,14 @@ class GJK:
             # that is defined by the edge and the normal. The normal of
             # half-plane is perpendicular to the edge and face normal.
             for i in range(clipping_polygon_nface):
-                v1 = self.multi_contact_faces[i_b, i].face1
-                v2 = self.multi_contact_faces[i_b, (i + 1) % clipping_polygon_nface].face1
-                v3 = self.multi_contact_faces[i_b, (i + 2) % clipping_polygon_nface].face1
+                v1 = self.contact_faces[i_b, i].face1
+                v2 = self.contact_faces[i_b, (i + 1) % clipping_polygon_nface].face1
+                v3 = self.contact_faces[i_b, (i + 2) % clipping_polygon_nface].face1
 
                 if clipping_polygon == 2:
-                    v1 = self.multi_contact_faces[i_b, i].face2
-                    v2 = self.multi_contact_faces[i_b, (i + 1) % clipping_polygon_nface].face2
-                    v3 = self.multi_contact_faces[i_b, (i + 2) % clipping_polygon_nface].face2
+                    v1 = self.contact_faces[i_b, i].face2
+                    v2 = self.contact_faces[i_b, (i + 1) % clipping_polygon_nface].face2
+                    v3 = self.contact_faces[i_b, (i + 2) % clipping_polygon_nface].face2
 
                 diff1 = v2 - v1
                 diff2 = normal
@@ -2873,10 +2517,10 @@ class GJK:
                 if not inside_v3:
                     res = -res
 
-                self.multi_contact_halfspaces[i_b, i].normal = res
+                self.contact_halfspaces[i_b, i].normal = res
 
                 # Plane distance
-                self.multi_contact_halfspaces[i_b, i].dist = v1.dot(res)
+                self.contact_halfspaces[i_b, i].dist = v1.dot(res)
 
             # Initialize buffers to store the clipped polygons
             nclipped = gs.ti_ivec2(0, 0)
@@ -2887,9 +2531,9 @@ class GJK:
 
             for i in range(nclipped[pi]):
                 if clipping_polygon == 1:
-                    self.multi_contact_clipped_polygons[i_b, pi, i] = self.multi_contact_faces[i_b, i].face2
+                    self.contact_clipped_polygons[i_b, pi, i] = self.contact_faces[i_b, i].face2
                 else:
-                    self.multi_contact_clipped_polygons[i_b, pi, i] = self.multi_contact_faces[i_b, i].face1
+                    self.contact_clipped_polygons[i_b, pi, i] = self.contact_faces[i_b, i].face1
 
             # For each edge of the clipping polygon, clip the subject polygon against it.
             # Here we use the Sutherland-Hodgman algorithm.
@@ -2897,16 +2541,16 @@ class GJK:
 
                 # Get the point [a] on the clipping polygon edge,
                 # and the normal [n] of the half-plane defined by the edge.
-                a = self.multi_contact_faces[i_b, e].face1
+                a = self.contact_faces[i_b, e].face1
                 if clipping_polygon == 2:
-                    a = self.multi_contact_faces[i_b, e].face2
-                n = self.multi_contact_halfspaces[i_b, e].normal
-                d = self.multi_contact_halfspaces[i_b, e].dist
+                    a = self.contact_faces[i_b, e].face2
+                n = self.contact_halfspaces[i_b, e].normal
+                d = self.contact_halfspaces[i_b, e].dist
 
                 for i in range(nclipped[pi]):
                     # Get edge PQ of the subject polygon
-                    P = self.multi_contact_clipped_polygons[i_b, pi, i]
-                    Q = self.multi_contact_clipped_polygons[i_b, pi, (i + 1) % nclipped[pi]]
+                    P = self.contact_clipped_polygons[i_b, pi, i]
+                    Q = self.contact_clipped_polygons[i_b, pi, (i + 1) % nclipped[pi]]
 
                     # Determine if P and Q are inside or outside the half-plane
                     inside_P = self.func_halfspace(a, n, P)
@@ -2918,19 +2562,19 @@ class GJK:
 
                     # PQ entirely inside the clipping edge, add Q to the clipped polygon
                     if inside_P and inside_Q:
-                        self.multi_contact_clipped_polygons[i_b, ci, nclipped[ci]] = Q
+                        self.contact_clipped_polygons[i_b, ci, nclipped[ci]] = Q
                         nclipped[ci] += 1
                         continue
 
                     # PQ intersects the half-plane, add the intersection point
                     t, ip = self.func_plane_intersect(n, d, P, Q)
                     if t >= 0 and t <= 1:
-                        self.multi_contact_clipped_polygons[i_b, ci, nclipped[ci]] = ip
+                        self.contact_clipped_polygons[i_b, ci, nclipped[ci]] = ip
                         nclipped[ci] += 1
 
                     # If Q is inside the half-plane, add it to the clipped polygon
                     if inside_Q:
-                        self.multi_contact_clipped_polygons[i_b, ci, nclipped[ci]] = Q
+                        self.contact_clipped_polygons[i_b, ci, nclipped[ci]] = Q
                         nclipped[ci] += 1
 
                 # Swap the buffers for the next edge clipping
@@ -2949,7 +2593,7 @@ class GJK:
                     rect = self.func_approximate_polygon_with_quad(i_b, pi, nclipped_polygon)
 
                     for i in range(4):
-                        witness2 = self.multi_contact_clipped_polygons[i_b, pi, rect[i]]
+                        witness2 = self.contact_clipped_polygons[i_b, pi, rect[i]]
                         witness1 = witness2 - approx_dir
                         self.witness[i_b, i].point_obj1 = witness1
                         self.witness[i_b, i].point_obj2 = witness2
@@ -2960,7 +2604,7 @@ class GJK:
                     self.n_witness[i_b] = self.max_contacts_per_pair
 
                     for i in range(self.max_contacts_per_pair):
-                        witness2 = self.multi_contact_clipped_polygons[i_b, pi, i]
+                        witness2 = self.contact_clipped_polygons[i_b, pi, i]
                         witness1 = witness2 - approx_dir
                         self.witness[i_b, i].point_obj1 = witness1
                         self.witness[i_b, i].point_obj2 = witness2
@@ -2971,7 +2615,7 @@ class GJK:
                     for i in range(nclipped_polygon):
                         skip = False
 
-                        polygon_vert = self.multi_contact_clipped_polygons[i_b, pi, i]
+                        polygon_vert = self.contact_clipped_polygons[i_b, pi, i]
 
                         # Find if there were any duplicate contacts similar to [polygon_vert]
                         for j in range(n_witness):
@@ -3021,9 +2665,8 @@ class GJK:
     @ti.func
     def func_approximate_polygon_with_quad(self, i_b, polygon_start, nverts):
         """
-        Find a convex quadrilateral that approximates the given N-gon [polygon].
-        We find it by selecting the four vertices in the polygon that
-        form the maximum area quadrilateral.
+        Find a convex quadrilateral that approximates the given N-gon [polygon]. We find it by selecting the four 
+        vertices in the polygon that form the maximum area quadrilateral.
         """
         i_v = gs.ti_ivec4(0, 1, 2, 3)
         i_v0 = gs.ti_ivec4(0, 1, 2, 3)
@@ -3074,20 +2717,17 @@ class GJK:
                     # Keep changing b
                     pass
 
-            pass
-
         return i_v
 
     @ti.func
     def func_quadrilateral_area(self, i_b, i_0, i_v0, i_v1, i_v2, i_v3):
         """
-        Compute the area of the quadrilateral formed by the vertices
-        with indices [i_v0, i_v1, i_v2, i_v3] in the [verts] array.
+        Compute the area of the quadrilateral formed by vertices [i_v0, i_v1, i_v2, i_v3] in the [verts] array.
         """
-        a = self.multi_contact_clipped_polygons[i_b, i_0, i_v0]
-        b = self.multi_contact_clipped_polygons[i_b, i_0, i_v1]
-        c = self.multi_contact_clipped_polygons[i_b, i_0, i_v2]
-        d = self.multi_contact_clipped_polygons[i_b, i_0, i_v3]
+        a = self.contact_clipped_polygons[i_b, i_0, i_v0]
+        b = self.contact_clipped_polygons[i_b, i_0, i_v1]
+        c = self.contact_clipped_polygons[i_b, i_0, i_v2]
+        d = self.contact_clipped_polygons[i_b, i_0, i_v3]
 
         ad = d - a
         db = b - d
@@ -3096,6 +2736,7 @@ class GJK:
         e = ad.cross(db)
         f = bc.cross(ca)
         g = e + f
+
         return 0.5 * ti.math.length(g)
 
     @ti.func
@@ -3250,20 +2891,20 @@ class GJK:
         """
         res = gs.ti_vec3(0, 0, 0)
 
-        s1 = self.gjk_simplex_vertex[i_b, i_s1].obj1
-        s2 = self.gjk_simplex_vertex[i_b, i_s2].obj1
-        s3 = self.gjk_simplex_vertex[i_b, i_s3].obj1
-        s4 = self.gjk_simplex_vertex[i_b, i_s4].obj1
+        s1 = self.simplex_vertex[i_b, i_s1].obj1
+        s2 = self.simplex_vertex[i_b, i_s2].obj1
+        s3 = self.simplex_vertex[i_b, i_s3].obj1
+        s4 = self.simplex_vertex[i_b, i_s4].obj1
         if i_v == 1:
-            s1 = self.gjk_simplex_vertex[i_b, i_s1].obj2
-            s2 = self.gjk_simplex_vertex[i_b, i_s2].obj2
-            s3 = self.gjk_simplex_vertex[i_b, i_s3].obj2
-            s4 = self.gjk_simplex_vertex[i_b, i_s4].obj2
+            s1 = self.simplex_vertex[i_b, i_s1].obj2
+            s2 = self.simplex_vertex[i_b, i_s2].obj2
+            s3 = self.simplex_vertex[i_b, i_s3].obj2
+            s4 = self.simplex_vertex[i_b, i_s4].obj2
         elif i_v == 2:
-            s1 = self.gjk_simplex_vertex[i_b, i_s1].mink
-            s2 = self.gjk_simplex_vertex[i_b, i_s2].mink
-            s3 = self.gjk_simplex_vertex[i_b, i_s3].mink
-            s4 = self.gjk_simplex_vertex[i_b, i_s4].mink
+            s1 = self.simplex_vertex[i_b, i_s1].mink
+            s2 = self.simplex_vertex[i_b, i_s2].mink
+            s3 = self.simplex_vertex[i_b, i_s3].mink
+            s4 = self.simplex_vertex[i_b, i_s4].mink
 
         c1 = _lambda[0]
         c2 = _lambda[1]

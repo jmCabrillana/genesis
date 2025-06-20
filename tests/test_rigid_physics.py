@@ -448,7 +448,7 @@ def test_urdf_rope(
     xml_path = os.path.join(asset_path, "linear_deformable.urdf")
 
     mj_sim = build_mujoco_sim(
-        xml_path, gs_solver, gs_integrator, merge_fixed_links, multi_contact, adjacent_collision, dof_damping
+        xml_path, gs_solver, gs_integrator, merge_fixed_links, multi_contact, adjacent_collision, dof_damping, False
     )
     gs_sim = build_genesis_sim(
         xml_path,
@@ -458,6 +458,7 @@ def test_urdf_rope(
         multi_contact,
         mujoco_compatibility,
         adjacent_collision,
+        False,
         show_viewer,
         mj_sim,
     )
