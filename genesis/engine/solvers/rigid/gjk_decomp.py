@@ -1199,14 +1199,10 @@ class GJK:
         e = gs.ti_vec3(0.0, 0.0, 0.0)
         e[min_i] = 1.0
 
-        d = ti.math.mat3(0, 0, 0, 0, 0, 0, 0, 0, 0)
         d1 = e.cross(diff)
-        d[0, 0], d[0, 1], d[0, 2] = d1[0], d1[1], d1[2]
         d2 = rotmat @ d1
-        d[1, 0], d[1, 1], d[1, 2] = d2[0], d2[1], d2[2]
         d3 = rotmat @ d2
-        d[2, 0], d[2, 1], d[2, 2] = d3[0], d3[1], d3[2]
-
+        
         # Insert the first two vertices into the polytope
         vi = ti.Vector([0, 0, 0, 0, 0], dt=ti.i32)
         for i in range(2):
@@ -1221,8 +1217,12 @@ class GJK:
 
         # Find three more vertices using [d1, d2, d3] as support vectors, and insert them into the polytope
         for i in range(3):
-            di = gs.ti_vec3(d[i, 0], d[i, 1], d[i, 2])
-            di_norm = ti.math.length(di)
+            di = d1
+            if i == 1:
+                di = d2
+            elif i == 2:
+                di = d3
+            di_norm = di.norm()
             vi[i + 2] = self.func_epa_support(i_ga, i_gb, i_b, di, di_norm)
 
         v3 = self.polytope_verts[i_b, vi[2]].mink
@@ -1235,26 +1235,26 @@ class GJK:
         # * We already know the face and adjacent face indices in building this.
         # * While building the hexahedron by attaching faces, if the face is very close to the origin, we replace the 
         # 1-simplex with the 2-simplex, and restart from it.
-
-        # Vertex indices for the faces in the hexahedron
-        i_vs = ti.Matrix(
-            [
-                [vi[0], vi[2], vi[3]],
-                [vi[0], vi[4], vi[2]],
-                [vi[0], vi[3], vi[4]],
-                [vi[1], vi[3], vi[2]],
-                [vi[1], vi[2], vi[4]],
-                [vi[1], vi[4], vi[3]],
-            ],
-            dt=ti.i32,
-        )
-
-        # Adjacent face indices for the faces in the hexahedron
-        i_as = ti.Matrix([[1, 3, 2], [2, 4, 0], [0, 5, 1], [5, 0, 4], [3, 1, 5], [4, 2, 3]], dt=ti.i32)
-
         for i in range(6):
-            i_v1, i_v2, i_v3 = i_vs[i, 0], i_vs[i, 1], i_vs[i, 2]
-            i_a1, i_a2, i_a3 = i_as[i, 0], i_as[i, 1], i_as[i, 2]
+            # Vertex indices for the faces in the hexahedron
+            i_v1, i_v2, i_v3 = vi[0], vi[2], vi[3]
+            # Adjacent face indices for the faces in the hexahedron
+            i_a1, i_a2, i_a3 = 1, 3, 2
+            if i == 1:
+                i_v1, i_v2, i_v3 = vi[0], vi[4], vi[2]
+                i_a1, i_a2, i_a3 = 2, 4, 0
+            elif i == 2:    
+                i_v1, i_v2, i_v3 = vi[0], vi[3], vi[4]
+                i_a1, i_a2, i_a3 = 0, 5, 1
+            elif i == 3:
+                i_v1, i_v2, i_v3 = vi[1], vi[3], vi[2]
+                i_a1, i_a2, i_a3 = 5, 0, 4
+            elif i == 4:
+                i_v1, i_v2, i_v3 = vi[1], vi[2], vi[4]
+                i_a1, i_a2, i_a3 = 3, 1, 5
+            elif i == 5:
+                i_v1, i_v2, i_v3 = vi[1], vi[4], vi[3]
+                i_a1, i_a2, i_a3 = 4, 2, 3
 
             if self.func_attach_face_to_polytope(i_b, i_v1, i_v2, i_v3, i_a1, i_a2, i_a3) < self.FLOAT_MIN_SQ:
                 self.func_replace_simplex_3(i_b, i_v1, i_v2, i_v3)
@@ -1268,7 +1268,7 @@ class GJK:
 
         if flag == 0:
             # Initialize face map
-            for i in range(6):
+            for i in ti.static(range(6)):
                 self.polytope_faces_map[i_b][i] = i
                 self.polytope_faces[i_b, i].map_idx = i
             self.polytope[i_b].nfaces_map = 6
@@ -1279,6 +1279,7 @@ class GJK:
     def func_epa_init_polytope_3d(self, i_ga, i_gb, i_b):
         """
         Create the polytope for EPA from a 2-simplex (triangle).
+        
         Return 0 when successful.
         """
         flag = 0
@@ -1289,10 +1290,8 @@ class GJK:
         v3 = self.simplex_vertex[i_b, 2].mink
 
         # Get normal; if it is zero, we cannot proceed
-        edge1 = v2 - v1
-        edge2 = v3 - v1
-        n = edge1.cross(edge2)
-        n_norm = ti.math.length(n)
+        n = (v2 - v1).cross(v3 - v1)
+        n_norm = n.norm()
         if n_norm < self.FLOAT_MIN:
             flag = EPA_RETURN_CODE.P3_BAD_NORMAL
         n_neg = -n
@@ -1346,26 +1345,27 @@ class GJK:
             ):
                 flag = EPA_RETURN_CODE.P3_MISSING_ORIGIN
             else:
-                # Vertex indices for the faces in the hexahedron
-                i_vs = ti.Matrix(
-                    [
-                        [vi[3], vi[0], vi[1]],
-                        [vi[3], vi[2], vi[0]],
-                        [vi[3], vi[1], vi[2]],
-                        [vi[4], vi[1], vi[0]],
-                        [vi[4], vi[0], vi[2]],
-                        [vi[4], vi[2], vi[1]],
-                    ],
-                    dt=ti.i32,
-                )
-
-                # Adjacent face indices for the faces in the hexahedron
-                i_as = ti.Matrix([[1, 3, 2], [2, 4, 0], [0, 5, 1], [5, 0, 4], [3, 1, 5], [4, 2, 3]], dt=ti.i32)
-
                 # Build hexahedron (6 faces) from the five vertices.
                 for i in range(6):
-                    i_v1, i_v2, i_v3 = i_vs[i, 0], i_vs[i, 1], i_vs[i, 2]
-                    i_a1, i_a2, i_a3 = i_as[i, 0], i_as[i, 1], i_as[i, 2]
+                    # Vertex indices for the faces in the hexahedron
+                    i_v1, i_v2, i_v3 = vi[3], vi[0], vi[1]
+                    # Adjacent face indices for the faces in the hexahedron
+                    i_a1, i_a2, i_a3 = 1, 3, 2
+                    if i == 1:
+                        i_v1, i_v2, i_v3 = vi[3], vi[2], vi[0]
+                        i_a1, i_a2, i_a3 = 2, 4, 0
+                    elif i == 2:
+                        i_v1, i_v2, i_v3 = vi[3], vi[1], vi[2]
+                        i_a1, i_a2, i_a3 = 0, 5, 1
+                    elif i == 3:
+                        i_v1, i_v2, i_v3 = vi[4], vi[1], vi[0]
+                        i_a1, i_a2, i_a3 = 5, 0, 4
+                    elif i == 4:
+                        i_v1, i_v2, i_v3 = vi[4], vi[0], vi[2]
+                        i_a1, i_a2, i_a3 = 3, 1, 5
+                    elif i == 5:
+                        i_v1, i_v2, i_v3 = vi[4], vi[2], vi[1]
+                        i_a1, i_a2, i_a3 = 4, 2, 3
 
                     dist2 = self.func_attach_face_to_polytope(i_b, i_v1, i_v2, i_v3, i_a1, i_a2, i_a3)
                     if dist2 < self.FLOAT_MIN_SQ:
@@ -1374,7 +1374,7 @@ class GJK:
 
         if flag == 0:
             # Initialize face map
-            for i in range(6):
+            for i in ti.static(range(6)):
                 self.polytope_faces_map[i_b][i] = i
                 self.polytope_faces[i_b, i].map_idx = i
             self.polytope[i_b].nfaces_map = 6
@@ -1385,6 +1385,7 @@ class GJK:
     def func_epa_init_polytope_4d(self, i_ga, i_gb, i_b):
         """
         Create the polytope for EPA from a 3-simplex (tetrahedron).
+
         Return 0 when successful.
         """
         flag = 0
@@ -1401,31 +1402,31 @@ class GJK:
                 self.simplex_vertex[i_b, i].mink,
             )
 
-        # If origin is on any face of the tetrahedron,
-        # replace the simplex with a 2-simplex (triangle)
-
-        # Vertex indices for the faces in the hexahedron
-        i_vs = ti.Matrix(
-            [[vi[0], vi[1], vi[2]], [vi[0], vi[3], vi[1]], [vi[0], vi[2], vi[3]], [vi[3], vi[2], vi[1]]], dt=ti.i32
-        )
-
-        # Adjacent face indices for the faces in the hexahedron
-        i_as = ti.Matrix([[1, 3, 2], [2, 3, 0], [0, 3, 1], [2, 0, 1]], dt=ti.i32)
-
+        # If origin is on any face of the tetrahedron, replace the simplex with a 2-simplex (triangle)
         for i in range(4):
-            v1, v2, v3 = i_vs[i, 0], i_vs[i, 1], i_vs[i, 2]
-            a1, a2, a3 = i_as[i, 0], i_as[i, 1], i_as[i, 2]
+            # Vertex indices for the faces in the hexahedron
+            v1, v2, v3 = vi[0], vi[1], vi[2]
+            # Adjacent face indices for the faces in the hexahedron
+            a1, a2, a3 = 1, 3, 2
+            if i == 1:
+                v1, v2, v3 = vi[0], vi[3], vi[1]
+                a1, a2, a3 = 2, 3, 0
+            elif i == 2:
+                v1, v2, v3 = vi[0], vi[2], vi[3]
+                a1, a2, a3 = 0, 3, 1
+            elif i == 3:
+                v1, v2, v3 = vi[3], vi[2], vi[1]
+                a1, a2, a3 = 2, 0, 1
 
             dist2 = self.func_attach_face_to_polytope(i_b, v1, v2, v3, a1, a2, a3)
 
             if dist2 < self.FLOAT_MIN_SQ:
                 self.func_replace_simplex_3(i_b, v1, v2, v3)
-                flag = EPA_RETURN_CODE.P4_FALLBACK3  # self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+                flag = EPA_RETURN_CODE.P4_FALLBACK3
                 break
 
         if flag == 0:
-            # If the tetrahedron does not contain the origin,
-            # we do not proceed anymore.
+            # If the tetrahedron does not contain the origin, we do not proceed anymore.
             v1, v2, v3, v4 = vi[0], vi[1], vi[2], vi[3]
             if not self.func_origin_tetra_intersection(
                 self.polytope_verts[i_b, v1].mink,
@@ -1437,7 +1438,7 @@ class GJK:
 
         if flag == 0:
             # Initialize face map
-            for i in range(4):
+            for i in ti.static(range(4)):
                 self.polytope_faces_map[i_b][i] = i
                 self.polytope_faces[i_b, i].map_idx = i
             self.polytope[i_b].nfaces_map = 4
@@ -1447,31 +1448,16 @@ class GJK:
     @ti.func
     def func_epa_support(self, i_ga, i_gb, i_b, dir, dir_norm):
         """
-        Find support points on the two objects using [dir].
+        Find support points on the two objects using [dir] and insert them into the polytope.
+        
         [dir] should be a unit vector from [ga] (obj1) to [gb] (obj2).
-        After finding them, insert them into the polytope.
         """
         d = gs.ti_vec3(1, 0, 0)
         if dir_norm > self.FLOAT_MIN:
             d = dir / dir_norm
 
-        (
-            support_point_obj1,
-            support_point_obj2,
-            support_point_id_obj1,
-            support_point_id_obj2,
-            support_point_minkowski,
-        ) = self.func_support(i_ga, i_gb, i_b, d, False)
-
         # Insert the support points into the polytope
-        v_index = self.func_epa_insert_vertex_to_polytope(
-            i_b,
-            support_point_obj1,
-            support_point_obj2,
-            support_point_id_obj1,
-            support_point_id_obj2,
-            support_point_minkowski,
-        )
+        v_index = self.func_epa_insert_vertex_to_polytope(i_b, *self.func_support(i_ga, i_gb, i_b, d, False))
 
         return v_index
 
@@ -1479,10 +1465,10 @@ class GJK:
     def func_attach_face_to_polytope(self, i_b, i_v1, i_v2, i_v3, i_a1, i_a2, i_a3):
         """
         Attach a face to the polytope.
-        [i_v1, i_v2, i_v3] are the vertices of the face,
-        [i_a1, i_a2, i_a3] are the adjacent faces.
+        
+        [i_v1, i_v2, i_v3] are the vertices of the face, [i_a1, i_a2, i_a3] are the adjacent faces.
 
-        Also return the squared distance of the face to the origin.
+        Return the squared distance of the face to the origin.
         """
         flag = 0.0
 
@@ -1513,6 +1499,7 @@ class GJK:
     def func_replace_simplex_3(self, i_b, i_v1, i_v2, i_v3):
         """
         Replace the simplex with a 2-simplex (triangle) from polytope vertices.
+        
         [i_v1, i_v2, i_v3] are the vertices that we will use from the polytope.
         """
         self.simplex[i_b].nverts = 3
@@ -1529,30 +1516,28 @@ class GJK:
     def func_ray_triangle_intersection(self, ray_v1, ray_v2, tri_v1, tri_v2, tri_v3):
         """
         Check if the ray intersects the triangle.
+        
         Return Non-Zero value if it does, otherwise return Zero.
         """
         flag = 0
 
         ray = ray_v2 - ray_v1
-        tri_ray_1 = tri_v1 - ray_v1
-        tri_ray_2 = tri_v2 - ray_v1
-        tri_ray_3 = tri_v3 - ray_v1
 
         # Signed volumes of the tetrahedrons formed by the ray and triangle edges
         vols = gs.ti_vec3(0.0, 0.0, 0.0)
         for i in range(3):
-            v1, v2 = tri_ray_1, tri_ray_2
+            v1, v2 = gs.ti_vec3(0.0, 0.0, 0.0), gs.ti_vec3(0.0, 0.0, 0.0)
+            if i == 0:
+                v1, v2 = tri_v1 - ray_v1, tri_v2 - ray_v1
             if i == 1:
-                v1, v2 = tri_ray_2, tri_ray_3
+                v1, v2 = tri_v2 - ray_v1, tri_v3 - ray_v1
             elif i == 2:
-                v1, v2 = tri_ray_3, tri_ray_1
+                v1, v2 = tri_v3 - ray_v1, tri_v1 - ray_v1
             vols[i] = self.func_det3(v1, v2, ray)
 
-        vol_1, vol_2, vol_3 = vols[0], vols[1], vols[2]
-
-        if vol_1 >= 0 and vol_2 >= 0 and vol_3 >= 0:
+        if (vols >= 0).all():
             flag = 1
-        elif vol_1 <= 0 and vol_2 <= 0 and vol_3 <= 0:
+        elif (vols <= 0).all():
             flag = -1
         else:
             flag = 0
@@ -1577,7 +1562,7 @@ class GJK:
             # is equal to the point itself
             pred = tri_v1 * _lambda[0] + tri_v2 * _lambda[1] + tri_v3 * _lambda[2]
             diff = pred - point
-            flag = 1 if diff.dot(diff) < self.FLOAT_MIN_SQ else 0
+            flag = 1 if diff.norm() < self.FLOAT_MIN else 0
 
         return flag
 
@@ -1587,92 +1572,51 @@ class GJK:
         Compute the affine coordinates of the point with respect to the triangle.
         """
         # Compute minors of the triangle vertices
-        m_1 = (
-            tri_v2[1] * tri_v3[2]
-            - tri_v2[2] * tri_v3[1]
-            - tri_v1[1] * tri_v3[2]
-            + tri_v1[2] * tri_v3[1]
-            + tri_v1[1] * tri_v2[2]
-            - tri_v1[2] * tri_v2[1]
-        )
+        ms = gs.ti_vec3(0.0, 0.0, 0.0)
+        for i in range(3):
+            i1, i2 = (i + 1) % 3, (i + 2) % 3
+            if i == 1:
+                i1, i2 = i2, i1
 
-        m_2 = (
-            tri_v2[0] * tri_v3[2]
-            - tri_v2[2] * tri_v3[0]
-            - tri_v1[0] * tri_v3[2]
-            + tri_v1[2] * tri_v3[0]
-            + tri_v1[0] * tri_v2[2]
-            - tri_v1[2] * tri_v2[0]
-        )
-
-        m_3 = (
-            tri_v2[0] * tri_v3[1]
-            - tri_v2[1] * tri_v3[0]
-            - tri_v1[0] * tri_v3[1]
-            + tri_v1[1] * tri_v3[0]
-            + tri_v1[0] * tri_v2[1]
-            - tri_v1[1] * tri_v2[0]
-        )
+            ms[i] = (
+                tri_v2[i1] * tri_v3[i2] - tri_v2[i2] * tri_v3[i1] - tri_v1[i1] * tri_v3[i2]
+                + tri_v1[i2] * tri_v3[i1] + tri_v1[i1] * tri_v2[i2] - tri_v1[i2] * tri_v2[i1]
+            )
 
         # Exclude one of the axes with the largest projection of the triangle
         # using the minors of the above linear system.
         m_max = 0.0
-        absm1, absm2, absm3 = ti.abs(m_1), ti.abs(m_2), ti.abs(m_3)
         x, y = 0, 0
-        if absm1 >= absm2 and absm1 >= absm3:
-            # Remove first row
-            m_max = m_1
-            x = 1
-            y = 2
-        elif absm2 >= absm1 and absm2 >= absm3:
-            # Remove second row
-            m_max = m_2
-            x = 0
-            y = 2
-        else:
-            # Remove third row
-            m_max = m_3
-            x = 0
-            y = 1
+        absms = ti.abs(ms)
+        for i in range(3):
+            if absms[i] >= absms[(i + 1) % 3] and absms[i] >= absms[(i + 2) % 3]:
+                # Remove the i-th row
+                m_max = ms[i]
+                x, y = (i + 1) % 3, (i + 2) % 3
+                if i == 1:
+                    x, y = y, x
+                break
 
-        # C1 corresponds to the signed area of 2-simplex (triangle): (point, tri_v2, tri_v3)
-        C1 = (
-            point[x] * tri_v2[y]
-            + point[y] * tri_v3[x]
-            + tri_v2[x] * tri_v3[y]
-            - point[x] * tri_v3[y]
-            - point[y] * tri_v2[x]
-            - tri_v3[x] * tri_v2[y]
-        )
+        cs = gs.ti_vec3(0.0, 0.0, 0.0)
+        for i in range(3):
+            tv1, tv2 = tri_v2, tri_v3
+            if i == 1:
+                tv1, tv2 = tri_v3, tri_v1
+            elif i == 2:
+                tv1, tv2 = tri_v1, tri_v2
+            
+            # Corresponds to the signed area of 2-simplex (triangle): (point, tv1, tv2)
+            cs[i] = (
+                point[x] * tv1[y]
+                + point[y] * tv2[x]
+                + tv1[x] * tv2[y]
+                - point[x] * tv2[y]
+                - point[y] * tv1[x]
+                - tv2[x] * tv1[y]
+            ) 
 
-        # C2 corresponds to the signed area of 2-simplex (triangle): (point, tri_v1, tri_v3)
-        C2 = (
-            point[x] * tri_v3[y]
-            + point[y] * tri_v1[x]
-            + tri_v3[x] * tri_v1[y]
-            - point[x] * tri_v1[y]
-            - point[y] * tri_v3[x]
-            - tri_v1[x] * tri_v3[y]
-        )
-
-        # C3 corresponds to the signed area of 2-simplex (triangle): (point, tri_v1, tri_v2)
-        C3 = (
-            point[x] * tri_v1[y]
-            + point[y] * tri_v2[x]
-            + tri_v1[x] * tri_v2[y]
-            - point[x] * tri_v2[y]
-            - point[y] * tri_v1[x]
-            - tri_v2[x] * tri_v1[y]
-        )
-
-        # Affine coordinates are computed as:
-        # [ l1, l2, l3 ] = [ C1 / m_max, C2 / m_max, C3 / m_max ]
-        _lambda = gs.ti_vec3(0, 0, 0)
-        _lambda[0] = C1 / m_max
-        _lambda[1] = C2 / m_max
-        _lambda[2] = C3 / m_max
-
-        return _lambda
+        # Affine coordinates are computed as: [ l1, l2, l3 ] = [ C1 / m_max, C2 / m_max, C3 / m_max ]
+        return cs / m_max
 
     @ti.func
     def func_origin_tetra_intersection(self, tet_v1, tet_v2, tet_v3, tet_v4):
