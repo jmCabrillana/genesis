@@ -53,9 +53,9 @@ class GJK:
             self.max_contacts_per_pair = 50
             self.max_contact_polygon_verts = 150
         else:
-            # If we assume most of the faces are triangles or quads, 8 points should be enough.
-            self.max_contacts_per_pair = 8
-            self.max_contact_polygon_verts = 24
+            # If we assume most of the faces are triangles or quads, 8 points should be enough (+2 for backup).
+            self.max_contacts_per_pair = 10
+            self.max_contact_polygon_verts = 30
 
         # Maximum number of iterations for GJK and EPA algorithms
         self.gjk_max_iterations = 50
@@ -69,21 +69,18 @@ class GJK:
         self.contact_face_tol = 0.99999872
         self.contact_edge_tol = 0.00159999931
 
-        if self._solver._enable_mujoco_compatibility:
-            self.FLOAT_MIN = gs.np_float(1e-15)
-            # Tolerance for stopping GJK and EPA algorithms when they converge.
-            self.tolerance = gs.np_float(1e-6)
-            # If the distance between two objects is smaller than this value, we consider them colliding.
-            self.collision_eps = gs.np_float(1e-6)
-        else:
-            self.FLOAT_MIN = gs.EPS
-            self.tolerance = gs.EPS
-            self.collision_eps = gs.EPS
-
+        # When using larger minimum values, unstability could occur for some examples (e.g. box pyramid).
+        self.FLOAT_MIN = gs.np_float(1e-15)
         self.FLOAT_MIN_SQ = self.FLOAT_MIN * self.FLOAT_MIN
+
         self.FLOAT_MAX = gs.np_float(1e15)
         self.FLOAT_MAX_SQ = self.FLOAT_MAX * self.FLOAT_MAX
 
+        # Tolerance for stopping GJK and EPA algorithms when they converge.
+        self.tolerance = gs.np_float(1e-6)
+        # If the distance between two objects is smaller than this value, we consider them colliding.
+        self.collision_eps = gs.np_float(1e-6)
+        
         ### Supports for GJK-EPA
         # Cache for support points
         self.support_vertex_id = ti.field(dtype=gs.ti_int, shape=(self._B, 2))
@@ -1941,15 +1938,10 @@ class GJK:
 
                 # Note that only one of [x, y, z] could be non-zero, because the triangle is on the box face.
                 sgn = xyz.sum()
-                if xyz[0]:
-                    self.contact_normals[i_b, c].id = 0
-                    c += 1
-                if xyz[1]:
-                    self.contact_normals[i_b, c].id = 2
-                    c += 1
-                if xyz[2]:
-                    self.contact_normals[i_b, c].id = 4
-                    c += 1
+                for j in range(3):
+                    if xyz[j]:
+                        self.contact_normals[i_b, c].id = j * 2
+                        c += 1
 
                 if sgn == -1:
                     # Flip if needed
@@ -1962,22 +1954,20 @@ class GJK:
                     else:
                         self.contact_normals[i_b, 1].normal = global_n
 
-                    if i == 0:
-                        self.contact_normals[i_b, c].id = 0 if xyz[0] > 0 else 1
-                    elif i == 1:
-                        self.contact_normals[i_b, c].id = 2 if xyz[1] > 0 else 3
-                    elif i == 2:
-                        self.contact_normals[i_b, c].id = 4 if xyz[2] > 0 else 5
+                    for j in range(3):
+                        if i == j:
+                            self.contact_normals[i_b, c].id = j * 2 if xyz[j] > 0 else j * 2 + 1
+                            break
+
                     c += 1
 
             elif dim == 1:
                 self.contact_normals[i_b, c].normal = global_n
-                if i == 0:
-                    self.contact_normals[i_b, c].id = 0 if xyz[0] > 0 else 1
-                elif i == 1:
-                    self.contact_normals[i_b, c].id = 2 if xyz[1] > 0 else 3
-                elif i == 2:
-                    self.contact_normals[i_b, c].id = 4 if xyz[2] > 0 else 5
+
+                for j in range(3):
+                    if i == j:
+                        self.contact_normals[i_b, c].id = j * 2 if xyz[j] > 0 else j * 2 + 1
+                        break
                 c += 1
 
         # Check [c] for detecting degenerate cases
@@ -2046,9 +2036,8 @@ class GJK:
         g_state = self._solver.geoms_state[i_g, i_b]
         g_quat = g_state.quat
         local_dir = gu.ti_transform_by_quat(dir, gu.ti_inv_quat(g_quat))
-        local_dir_norm = ti.math.length(local_dir)
-        local_dir = local_dir * (1.0 / local_dir_norm)
-
+        local_dir = local_dir.normalized()
+        
         # Determine the closest face normal
         flag = 0
         for i in range(6):
@@ -2090,21 +2079,17 @@ class GJK:
 
         for i_f in range(face_start, face_end):
             face = self._solver.faces_info[i_f].verts_idx
-            has_v1, has_v2, has_v3 = False, False, False
+            has_vs = gs.ti_ivec3(0, 0, 0)
             if v1 == face[0] or v1 == face[1] or v1 == face[2]:
-                has_v1 = True
+                has_vs[0] = 1
             if v2 == face[0] or v2 == face[1] or v2 == face[2]:
-                has_v2 = True
+                has_vs[1] = 1
             if v3 == face[0] or v3 == face[1] or v3 == face[2]:
-                has_v3 = True
+                has_vs[2] = 1
 
-            compute_normal = False
-            if dim == 3 and (has_v1 and has_v2 and has_v3):
-                compute_normal = True
-            elif dim == 2 and (has_v1 and has_v2):
-                compute_normal = True
-            elif dim == 1 and (has_v1):
-                compute_normal = True
+            compute_normal = True
+            for j in range(dim):
+                compute_normal = compute_normal and (has_vs[j] == 1)
 
             if compute_normal:
                 v1pos = self._solver.verts_info[face[0]].init_pos
@@ -2113,25 +2098,19 @@ class GJK:
 
                 # Compute the face normal
                 n = (v2pos - v1pos).cross(v3pos - v1pos)
-                n_norm = ti.math.length(n)
-                n = n * (1.0 / n_norm)
+                n = n.normalized()
                 n = gu.ti_transform_by_quat(n, g_quat)
 
+                self.contact_normals[i_b, n_normals].normal = n
+                self.contact_normals[i_b, n_normals].id = i_f
+                n_normals += 1
+
                 if dim == 3:
-                    self.contact_normals[i_b, 0].normal = n
-                    self.contact_normals[i_b, 0].id = i_f
-                    n_normals = 1
                     break
                 elif dim == 2:
-                    self.contact_normals[i_b, n_normals].normal = n
-                    self.contact_normals[i_b, n_normals].id = i_f
-                    n_normals += 1
                     if n_normals == 2:
                         break
                 else:
-                    self.contact_normals[i_b, n_normals].normal = n
-                    self.contact_normals[i_b, n_normals].id = i_f
-                    n_normals += 1
                     if n_normals == self.max_contact_polygon_verts:
                         break
 
@@ -2145,16 +2124,13 @@ class GJK:
         res = gs.ti_ivec2(0, 0)
         flag = 0
 
-        for i in range(nv):
+        for i, j in ti.ndrange(nv, nw):
             ni = self.contact_faces[i_b, i].normal1
-            for j in range(nw):
-                nj = self.contact_faces[i_b, j].normal2
-                if ni.dot(nj) < -self.contact_face_tol:
-                    res[0] = i
-                    res[1] = j
-                    flag = 1
-                    break
-            if flag:
+            nj = self.contact_faces[i_b, j].normal2
+            if ni.dot(nj) < -self.contact_face_tol:
+                res[0] = i
+                res[1] = j
+                flag = 1
                 break
 
         return res, flag
@@ -2280,7 +2256,7 @@ class GJK:
         """
         Normalize the vector [v] safely.
         """
-        norm = ti.math.length(v)
+        norm = v.norm()
 
         if norm < self.FLOAT_MIN:
             # If the vector is too small, set it to a default value
@@ -2301,24 +2277,21 @@ class GJK:
         res = gs.ti_ivec2(0, 0)
         flag = 0
 
-        for i in range(nedge):
+        for i, j in ti.ndrange(nedge, nface):
             ni = self.contact_faces[i_b, i].normal1
+            nj = self.contact_faces[i_b, j].normal2
+
             if not is_edge_face:
-                # The second normal is the edge normal
+                # The first normal is the edge normal
                 ni = self.contact_faces[i_b, i].normal2
+            if not is_edge_face:
+                # The second normal is the face normal
+                nj = self.contact_faces[i_b, j].normal1
 
-            for j in range(nface):
-                nj = self.contact_faces[i_b, j].normal2
-                if not is_edge_face:
-                    # The first normal is the face normal
-                    nj = self.contact_faces[i_b, j].normal1
-
-                if ti.abs(ni.dot(nj)) < self.contact_edge_tol:
-                    res[0] = i
-                    res[1] = j
-                    flag = 1
-                    break
-            if flag:
+            if ti.abs(ni.dot(nj)) < self.contact_edge_tol:
+                res[0] = i
+                res[1] = j
+                flag = 1
                 break
 
         return res, flag
@@ -2332,52 +2305,39 @@ class GJK:
         g_size_y = self._solver.geoms_info[i_g].data[1]
         g_size_z = self._solver.geoms_info[i_g].data[2]
 
+        # Axis to fix, 0: x, 1: y, 2: z
+        axis = face_idx // 2           
+        # Side of the fixed axis, 1: positive, -1: negative
+        side = 1 - 2 * (face_idx & 1) 
+
+        nface = 4 if face_idx >= 0 and face_idx < 6 else 0
+
+        vs = ti.Vector([0.0 for _ in range(3 * 4)], dt=gs.ti_float)
+        if nface:
+            for i in ti.static(range(4)):
+                b0 = i & 1
+                b1 = i >> 1
+                # +1, +1, -1, -1
+                su = 1 - 2 * b1
+                # +1, -1, -1, +1
+                sv = 1 - 2 * (b0 ^ b1)
+
+                # Flip sv based on [side]
+                sv = sv * side
+
+                s = gs.ti_vec3(0, 0, 0)
+                s[axis] = side
+                s[(axis + 1) % 3] = su
+                s[(axis + 2) % 3] = sv
+
+                vs[3 * i + 0] = s[0] * g_size_x
+                vs[3 * i + 1] = s[1] * g_size_y
+                vs[3 * i + 2] = s[2] * g_size_z
+            
         # Get geometry position and quaternion
         g_state = self._solver.geoms_state[i_g, i_b]
         g_pos = g_state.pos
         g_quat = g_state.quat
-
-        nface = 4
-
-        vs = ti.Vector([0.0 for _ in range(3 * 4)], dt=gs.ti_float)
-        if face_idx == 0:
-            # Right
-            vs[0], vs[1], vs[2] = g_size_x, g_size_y, g_size_z
-            vs[3], vs[4], vs[5] = g_size_x, g_size_y, -g_size_z
-            vs[6], vs[7], vs[8] = g_size_x, -g_size_y, -g_size_z
-            vs[9], vs[10], vs[11] = g_size_x, -g_size_y, g_size_z
-        elif face_idx == 1:
-            # Left
-            vs[0], vs[1], vs[2] = -g_size_x, g_size_y, -g_size_z
-            vs[3], vs[4], vs[5] = -g_size_x, g_size_y, g_size_z
-            vs[6], vs[7], vs[8] = -g_size_x, -g_size_y, g_size_z
-            vs[9], vs[10], vs[11] = -g_size_x, -g_size_y, -g_size_z
-        elif face_idx == 2:
-            # Top
-            vs[0], vs[1], vs[2] = -g_size_x, g_size_y, -g_size_z
-            vs[3], vs[4], vs[5] = g_size_x, g_size_y, -g_size_z
-            vs[6], vs[7], vs[8] = g_size_x, g_size_y, g_size_z
-            vs[9], vs[10], vs[11] = -g_size_x, g_size_y, g_size_z
-        elif face_idx == 3:
-            # Bottom
-            vs[0], vs[1], vs[2] = -g_size_x, -g_size_y, g_size_z
-            vs[3], vs[4], vs[5] = g_size_x, -g_size_y, g_size_z
-            vs[6], vs[7], vs[8] = g_size_x, -g_size_y, -g_size_z
-            vs[9], vs[10], vs[11] = -g_size_x, -g_size_y, -g_size_z
-        elif face_idx == 4:
-            # Front
-            vs[0], vs[1], vs[2] = -g_size_x, g_size_y, g_size_z
-            vs[3], vs[4], vs[5] = g_size_x, g_size_y, g_size_z
-            vs[6], vs[7], vs[8] = g_size_x, -g_size_y, g_size_z
-            vs[9], vs[10], vs[11] = -g_size_x, -g_size_y, g_size_z
-        elif face_idx == 5:
-            # Back
-            vs[0], vs[1], vs[2] = g_size_x, g_size_y, -g_size_z
-            vs[3], vs[4], vs[5] = -g_size_x, g_size_y, -g_size_z
-            vs[6], vs[7], vs[8] = -g_size_x, -g_size_y, -g_size_z
-            vs[9], vs[10], vs[11] = g_size_x, -g_size_y, -g_size_z
-        else:
-            nface = 0
 
         # Transform the vertices to the global coordinates
         for i in range(nface):
@@ -2438,11 +2398,8 @@ class GJK:
                     v2 = self.contact_faces[i_b, (i + 1) % clipping_polygon_nface].face2
                     v3 = self.contact_faces[i_b, (i + 2) % clipping_polygon_nface].face2
 
-                diff1 = v2 - v1
-                diff2 = normal
-
                 # Plane normal
-                res = diff1.cross(diff2)
+                res = (v2 - v1).cross(normal)
 
                 # Reorient normal if needed
                 inside_v3 = self.func_halfspace(v1, res, v3)
@@ -2470,7 +2427,6 @@ class GJK:
             # For each edge of the clipping polygon, clip the subject polygon against it.
             # Here we use the Sutherland-Hodgman algorithm.
             for e in range(clipping_polygon_nface):
-
                 # Get the point [a] on the clipping polygon edge,
                 # and the normal [n] of the half-plane defined by the edge.
                 a = self.contact_faces[i_b, e].face1
@@ -2518,7 +2474,6 @@ class GJK:
             nclipped_polygon = nclipped[pi]
 
             if nclipped_polygon >= 1:
-
                 if self.max_contacts_per_pair < 5 and nclipped_polygon > 4:
                     # Approximate the clipped polygon with a convex quadrilateral
                     self.n_witness[i_b] = 4
@@ -2569,8 +2524,7 @@ class GJK:
         Check if the point [p] is inside the half-space defined by the plane
         with normal [n] and point [a].
         """
-        diff = p - a
-        return diff.dot(n) > -self.FLOAT_MIN
+        return (p - a).dot(n) > -self.FLOAT_MIN
 
     @ti.func
     def func_plane_intersect(self, pn, pd, v1, v2):
@@ -2586,9 +2540,9 @@ class GJK:
         ip = gs.ti_vec3(0, 0, 0)
 
         dir = v2 - v1
-        temp = pn.dot(dir)
-        if temp != 0:
-            t = (pd - pn.dot(v1)) / temp
+        normal_dot = pn.dot(dir)
+        if ti.abs(normal_dot) > self.FLOAT_MIN:
+            t = (pd - pn.dot(v1)) / normal_dot
             if t >= 0 and t <= 1:
                 ip = v1 + t * dir
 
@@ -2621,10 +2575,10 @@ class GJK:
                 if change_flag == 3:
                     if i_v[1] == i_v[0]:
                         i_v[1] = (i_v[1] + 1) % nverts
-                        if i_v[2] == i_v[1]:
-                            i_v[2] = (i_v[2] + 1) % nverts
-                            if i_v[3] == i_v[2]:
-                                i_v[3] = (i_v[3] + 1) % nverts
+                    if i_v[2] == i_v[1]:
+                        i_v[2] = (i_v[2] + 1) % nverts
+                    if i_v[3] == i_v[2]:
+                        i_v[3] = (i_v[3] + 1) % nverts
                     # Change a if possible
                     if i_v[0] == nverts - 1:
                         break
@@ -2660,16 +2614,9 @@ class GJK:
         b = self.contact_clipped_polygons[i_b, i_0, i_v1]
         c = self.contact_clipped_polygons[i_b, i_0, i_v2]
         d = self.contact_clipped_polygons[i_b, i_0, i_v3]
+        e = (d - a).cross(b - d) + (c - b).cross(a - c)
 
-        ad = d - a
-        db = b - d
-        bc = c - b
-        ca = a - c
-        e = ad.cross(db)
-        f = bc.cross(ca)
-        g = e + f
-
-        return 0.5 * ti.math.length(g)
+        return 0.5 * e.norm()
 
     @ti.func
     def func_is_discrete_geoms(self, i_ga, i_gb, i_b):
@@ -2730,16 +2677,16 @@ class GJK:
         """
         Rotation matrix for 120 degrees rotation around the given axis.
         """
-        n = ti.math.length(axis)
-        u1 = axis[0] / n
-        u2 = axis[1] / n
-        u3 = axis[2] / n
+        u = axis.normalized()
+        u1, u2, u3 = u[0], u[1], u[2]                
 
         # sin and cos of 120 degrees
         sin = 0.86602540378
         cos = -0.5
 
-        mat = ti.math.mat3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        # Rotation matrix from axis-angle representation
+        # https://en.wikipedia.org/wiki/Rotation_matrix#Rotation_matrix_from_axis_and_angle
+        mat = ti.Matrix.zero(gs.ti_float, 3, 3)
         mat[0, 0] = cos + u1 * u1 * (1 - cos)
         mat[0, 1] = u1 * u2 * (1 - cos) - u3 * sin
         mat[0, 2] = u1 * u3 * (1 - cos) + u2 * sin
@@ -2756,6 +2703,7 @@ class GJK:
     def func_project_origin_to_plane(self, v1, v2, v3):
         """
         Project the origin onto the plane defined by the simplex vertices.
+        
         Find the projected point and return flag with it.
         """
         point, flag = gs.ti_vec3(0, 0, 0), -1
@@ -2764,39 +2712,40 @@ class GJK:
         d31 = v3 - v1
         d32 = v3 - v2
 
-        # Normal = (v1 - v2) x (v3 - v2)
-        n = d32.cross(d21)
-        nv = n.dot(v2)
-        nn = n.dot(n)
-        if nn == 0:
-            flag = 1
-        elif nv != 0 and nn > self.FLOAT_MIN:
-            point = n * (nv / nn)
-            flag = 0
-
-        if flag == -1:
-            # If previous attempt was numerically unstable,
-            # try use other normal estimations
-
-            # Normal = (v2 - v1) x (v3 - v1)
-            n = d21.cross(d31)
-            nv = n.dot(v1)
-            nn = n.dot(n)
+        for i in range(3):
+            n = gs.ti_vec3(0, 0, 0)
+            v = gs.ti_vec3(0, 0, 0)
+            if i == 0:
+                # Normal = (v1 - v2) x (v3 - v2)
+                n = d32.cross(d21)
+                v = v2
+            elif i == 1:
+                # Normal = (v2 - v1) x (v3 - v1)
+                n = d21.cross(d31)
+                v = v1
+            else:
+                # Normal = (v1 - v3) x (v2 - v3)
+                n = d31.cross(d32)
+                v = v3
+            nv = n.dot(v)
+            nn = n.norm_sqr()
             if nn == 0:
+                # Zero normal, cannot project.
                 flag = 1
-            elif nv != 0 and nn > self.FLOAT_MIN:
+                break
+            elif nn > self.FLOAT_MIN:
                 point = n * (nv / nn)
                 flag = 0
-
-        if flag == -1:
-            # Last fallback
-
-            # Normal = (v1 - v3) x (v2 - v3)
-            n = d31.cross(d32)
-            nv = n.dot(v3)
-            nn = n.dot(n)
-            point = n * (nv / nn)
-            flag = 0
+                break
+            
+            # Last fallback if no valid normal was found
+            if i == 2:
+                # If the normal is still unreliable, cannot project.
+                if nn < self.FLOAT_MIN:
+                    flag = 1
+                else:
+                    point = n * (nv / nn)
+                    flag = 0
 
         return point, flag
 
