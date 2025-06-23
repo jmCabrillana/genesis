@@ -162,8 +162,8 @@ class GJK:
             self.max_contact_polygon_verts = 150
         
             # Tolerance for normal alignment between (face-face) or (edge-face) during MuJoCo's multi-contact detection.
-            # The normals should align within this tolerance to be considered as a valid parallel contact. The values are 
-            # cosine and sine of 1.6e-3, respectively.
+            # The normals should align within this tolerance to be considered as a valid parallel contact. The values 
+            # are cosine and sine of 1.6e-3, respectively.
             # TODO: These parameters are from MuJoCo, but seem to be very strict. Need some tests to verify if they are
             # the best values.
             self.contact_face_tol = 0.99999872
@@ -372,21 +372,11 @@ class GJK:
     @ti.func
     def func_gjk(self, i_ga, i_gb, i_b, shrink_sphere):
         """
-        GJK algorithm to compute the minimum distance between two convex objects. This implementation is based on the
-        MuJoCo implementation, which can be found here:
-        https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L171
-
-        The original GJK algorithm is explained in the paper:
-
-        Gilbert, Elmer G., Daniel W. Johnson, and S. Sathiya Keerthi.
-        "A fast procedure for computing the distance between complex objects in three-dimensional space."
-        IEEE Journal on Robotics and Automation 4.2 (2002): 193-203.
-
-        TODO: This implementation could be further improved by referencing the following paper and implementation:
-
-        Cameron, Stephen. "Enhancing GJK: Computing minimum and penetration distances between convex polyhedra."
-        Proceedings of international conference on robotics and automation. Vol. 4. IEEE, 1997.
-        https://www.cs.ox.ac.uk/people/stephen.cameron/distances/gjk2.4/
+        GJK algorithm to compute the minimum distance between two convex objects.
+         
+        This implementation is based on the MuJoCo implementation.
+        
+        TODO: This implementation could be further improved by referencing the follow-up work shown below.
 
         Parameters
         ----------
@@ -394,6 +384,23 @@ class GJK:
             If True, use point and line support functions for sphere and capsule geometries, respectively. It is more
             efficient and stable for shallow penetrations than the full GJK algorithm. However, if there is a deep
             penetration, we have to fallback to the full GJK algorithm by setting this parameter to False.
+
+        .. seealso::
+        MuJoCo's original implementation:
+        https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L171
+
+        Original paper:
+        Gilbert, Elmer G., Daniel W. Johnson, and S. Sathiya Keerthi.
+        "A fast procedure for computing the distance between complex objects in three-dimensional space."
+        IEEE Journal on Robotics and Automation 4.2 (2002): 193-203.
+
+        Further improvements:
+        Cameron, Stephen. "Enhancing GJK: Computing minimum and penetration distances between convex polyhedra."
+        Proceedings of international conference on robotics and automation. Vol. 4. IEEE, 1997.
+        https://www.cs.ox.ac.uk/people/stephen.cameron/distances/gjk2.4/
+
+        Montaut, Louis, et al. "Collision detection accelerated: An optimization perspective." 
+        https://arxiv.org/abs/2205.09663
         """
 
         # Simplex index
@@ -554,9 +561,10 @@ class GJK:
     @ti.func
     def func_gjk_intersect(self, i_ga, i_gb, i_b):
         """
-        If we do not have to find the minimum distance between two objects and only have to check if they intersect,
-        we can use this function. It refines the simplex until it contains the origin or it is determined that the
-        objects are separated.
+        Check if the two objects intersect using the GJK algorithm.
+
+        This function refines the simplex until it contains the origin or it is determined that the objects are
+        separated. It is used to check if the objects intersect, not to find the minimum distance between them.
         """
         # Copy simplex to temporary storage
         for i in ti.static(range(4)):
@@ -776,9 +784,8 @@ class GJK:
         scs = gs.ti_ivec4(0, 0, 0, 0)
         for i in range(4):
             scs[i] = func_compare_sign(Cs[i], m_det)
-        sc1, sc2, sc3, sc4 = scs[0], scs[1], scs[2], scs[3]
 
-        if sc1 and sc2 and sc3 and sc4:
+        if scs.all():
             # If all barycentric coordinates are positive, the origin is inside the tetrahedron
             _lambda = Cs / m_det
             flag = 1
@@ -909,7 +916,9 @@ class GJK:
     def func_epa(self, i_ga, i_gb, i_b):
         """
         EPA algorithm to find the exact penetration depth and contact normal using the simplex constructed by GJK.
-        This implementation is based on the MuJoCo implementation, which can be found here:
+
+        .. seealso::
+        MuJoCo's original implementation:
         https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L1331
         """
         upper = self.FLOAT_MAX
@@ -1068,11 +1077,9 @@ class GJK:
     @ti.func
     def func_epa_witness(self, i_ga, i_gb, i_b, i_f):
         """
-        Compute the witness points from the geometries
-        for the face i_f of the polytope.
+        Compute the witness points from the geometries for the face i_f of the polytope.
         """
-        # Find the affine coordinates of the origin's
-        # projection on the face i_f
+        # Find the affine coordinates of the origin's projection on the face i_f
         face = self.polytope_faces[i_b, i_f]
         face_v1 = self.polytope_verts[i_b, face.verts_idx[0]].mink
         face_v2 = self.polytope_verts[i_b, face.verts_idx[1]].mink
@@ -1232,7 +1239,10 @@ class GJK:
         """
         Create the polytope for EPA from a 1-simplex (line segment).
 
-        Return 0 when successful.
+        Returns
+        -------
+        int
+            0 when successful, or a flag indicating an error.
         """
         flag = 0
 
@@ -1337,7 +1347,10 @@ class GJK:
         """
         Create the polytope for EPA from a 2-simplex (triangle).
 
-        Return 0 when successful.
+        Returns
+        -------
+        int
+            0 when successful, or a flag indicating an error.
         """
         flag = 0
 
@@ -1391,10 +1404,9 @@ class GJK:
                 v = v4 if i == 0 else v5
                 tets_has_origin[i] = self.func_origin_tetra_intersection(v1, v2, v3, v)
 
-            # @TODO: It's possible for GJK to return a triangle with
-            # origin not contained in it but within tolerance from it.
-            # In that case, the hexahedron could possibly be constructed
-            # that does ont contain the origin, but there is penetration depth.
+            # @TODO: It's possible for GJK to return a triangle with origin not contained in it but within tolerance 
+            # from it. In that case, the hexahedron could possibly be constructed that does ont contain the origin, but 
+            # there is penetration depth.
             if self.simplex[i_b].dist > 10 * self.FLOAT_MIN and (not tets_has_origin[0]) and (not tets_has_origin[1]):
                 flag = EPA_RETURN_CODE.P3_MISSING_ORIGIN
             else:
@@ -1439,7 +1451,10 @@ class GJK:
         """
         Create the polytope for EPA from a 3-simplex (tetrahedron).
 
-        Return 0 when successful.
+        Returns
+        -------
+        int
+            0 when successful, or a flag indicating an error.
         """
         flag = 0
 
@@ -1503,7 +1518,10 @@ class GJK:
         """
         Find support points on the two objects using [dir] and insert them into the polytope.
 
-        [dir] should be a unit vector from [ga] (obj1) to [gb] (obj2).
+        Parameters
+        ----------
+        dir: gs.ti_vec3
+            Vector from [ga] (obj1) to [gb] (obj2).
         """
         d = gs.ti_vec3(1, 0, 0)
         if dir_norm > self.FLOAT_MIN:
@@ -1521,7 +1539,10 @@ class GJK:
 
         [i_v1, i_v2, i_v3] are the vertices of the face, [i_a1, i_a2, i_a3] are the adjacent faces.
 
-        Return the squared distance of the face to the origin.
+        Returns
+        -------
+        float
+            Squared distance of the face to the origin.
         """
         flag = 0.0
 
@@ -1553,7 +1574,10 @@ class GJK:
         """
         Replace the simplex with a 2-simplex (triangle) from polytope vertices.
 
-        [i_v1, i_v2, i_v3] are the vertices that we will use from the polytope.
+        Parameters
+        ----------
+        i_v1, i_v2, i_v3: int
+            Indices of the vertices in the polytope that will be used to form the triangle.
         """
         self.simplex[i_b].nverts = 3
         self.simplex_vertex[i_b, 0] = self.polytope_verts[i_b, i_v1]
@@ -1570,7 +1594,10 @@ class GJK:
         """
         Check if the ray intersects the triangle.
 
-        Return Non-Zero value if it does, otherwise return Zero.
+        Returns
+        -------
+        int
+            Non-Zero value if the ray intersects the triangle, otherwise 0.
         """
         flag = 0
 
@@ -1907,9 +1934,8 @@ class GJK:
     def func_simplex_dim(self, v1i, v2i, v3i, v1, v2, v3):
         """
         Determine the dimension of the given simplex (1-3).
-        If every point is the same, 1-dim.
-        If two points are the same, 2-dim.
-        If all points are different, 3-dim.
+        
+        If every point is the same, 1-dim. If two points are the same, 2-dim. If all points are different, 3-dim.
         """
         dim = 0
         rv1i, rv2i, rv3i = v1i, v2i, v3i
@@ -1944,8 +1970,7 @@ class GJK:
         If the simplex is a line, at most two face normals are related.
         If the simplex is a point, at most three face normals are related.
 
-        We identify which face normals are related to the simplex
-        by checking the vertex indices of the simplex vertices.
+        We identify related face normals to the simplex by checking the vertex indices of the simplex.
         """
         g_state = self._solver.geoms_state[i_g, i_b]
         g_quat = g_state.quat
@@ -2042,13 +2067,14 @@ class GJK:
     @ti.func
     def func_cmp_bit(self, v1, v2, v3, n, shift):
         """
-        Compare one bit of v1 and v2 that sits at position `shift`
-        (shift = 0 for the LSB, 1 for the next bit, …).
+        Compare one bit of v1 and v2 that sits at position `shift` (shift = 0 for the LSB, 1 for the next bit, …).
 
         Returns:
-            +1  if both bits are 1
+        -------
+        int
+            1  if both bits are 1
+            -1 if both bits are 0
             0  if bits differ
-            -1  if both bits are 0
         """
 
         b1 = (v1 >> shift) & 1  # 0 or 1
@@ -2103,7 +2129,7 @@ class GJK:
     @ti.func
     def func_potential_mesh_normals(self, i_g, i_b, dim, v1, v2, v3):
         """
-        For a simplex defined on a mesh with three vertices [v1, v2, v3],
+        For a simplex defined on a mesh with three vertices [v1, v2, v3], 
         we find which face normals are potentially related to the simplex.
 
         If the simplex is a triangle, at most one face normal is related.
@@ -2111,8 +2137,7 @@ class GJK:
         If the simplex is a point, multiple faces that are adjacent to the point
         could be related.
 
-        We identify which face normals are related to the simplex
-        by checking the vertex indices of the simplex vertices.
+        We identify related face normals to the simplex by checking the vertex indices of the simplex.
         """
         # Get the geometry state and quaternion
         g_state = self._solver.geoms_state[i_g, i_b]
@@ -2122,8 +2147,8 @@ class GJK:
         n_normals = 0
 
         # Exhaustive search for the face normals
-        # @TODO: This would require a lot of cost if the mesh is large.
-        # It would be better to precompute adjacency information in the solver.
+        # @TODO: This would require a lot of cost if the mesh is large. It would be better to precompute adjacency 
+        # information in the solver and use it here.
         face_start = self._solver.geoms_info[i_g].face_start
         face_end = self._solver.geoms_info[i_g].face_end
 
@@ -2194,8 +2219,7 @@ class GJK:
         If the simplex is a line, at most one edge normal are related.
         If the simplex is a point, at most three edge normals are related.
 
-        We identify which edge normals are related to the simplex
-        by checking the vertex indices of the simplex vertices.
+        We identify related edge normals to the simplex by checking the vertex indices of the simplex.
         """
         # Get the geometry state and quaternion
         g_state = self._solver.geoms_state[i_g, i_b]
@@ -2245,11 +2269,9 @@ class GJK:
         we find which edge normals are potentially related to the simplex.
 
         If the simplex is a line, at most one edge normal are related.
-        If the simplex is a point, multiple edges that are adjacent to the point
-        could be related.
+        If the simplex is a point, multiple edges that are adjacent to the point could be related.
 
-        We identify which edge normals are related to the simplex
-        by checking the vertex indices of the simplex vertices.
+        We identify related edge normals to the simplex by checking the vertex indices of the simplex.
         """
         # Get the geometry state and quaternion
         g_state = self._solver.geoms_state[i_g, i_b]
@@ -2427,8 +2449,12 @@ class GJK:
         """
         Clip a polygon against the another polygon using Sutherland-Hodgman algorithm.
 
-        @ normal: The normal of the clipping polygon.
-        @ approx_dir: Preferred separation direction for the clipping.
+        Parameters:
+        ----------
+        normal: gs.ti_vec3
+            The normal of the clipping polygon.
+        approx_dir: gs.ti_vec3
+            Preferred separation direction for the clipping.
         """
         clipping_polygon = 1 if not edgecon1 else 2
         clipping_polygon_nface = nface1 if clipping_polygon == 1 else nface2
@@ -2571,20 +2597,22 @@ class GJK:
     @ti.func
     def func_halfspace(self, a, n, p):
         """
-        Check if the point [p] is inside the half-space defined by the plane
-        with normal [n] and point [a].
+        Check if the point [p] is inside the half-space defined by the plane with normal [n] and point [a].
         """
         return (p - a).dot(n) > -self.FLOAT_MIN
 
     @ti.func
     def func_plane_intersect(self, pn, pd, v1, v2):
         """
-        Compute the intersection point of the line segment [v1, v2]
+        Compute the intersection point of the line segment [v1, v2] 
         with the plane defined by the normal [pn] and distance [pd].
 
         v1 + t * (v2 - v1) = intersection point
 
-        Return t and the intersection point.
+        Return:
+        -------
+        t: float
+            The parameter t that defines the intersection point on the line segment.
         """
         t = self.FLOAT_MAX
         ip = gs.ti_vec3(0, 0, 0)
@@ -2695,7 +2723,11 @@ class GJK:
     def func_support(self, i_ga, i_gb, i_b, dir, shrink_sphere):
         """
         Find support points on the two objects using [dir].
-        [dir] should be a unit vector from [ga] (obj1) to [gb] (obj2).
+
+        Parameters:
+        ----------
+        dir: gs.ti_vec3
+            The direction in which to find the support points, from [ga] (obj 1) to [gb] (obj 2).
         """
         support_point_obj1 = gs.ti_vec3(0, 0, 0)
         support_point_obj2 = gs.ti_vec3(0, 0, 0)
@@ -2753,8 +2785,6 @@ class GJK:
     def func_project_origin_to_plane(self, v1, v2, v3):
         """
         Project the origin onto the plane defined by the simplex vertices.
-        
-        Find the projected point and return flag with it.
         """
         point, flag = gs.ti_vec3(0, 0, 0), -1
 
@@ -2817,8 +2847,12 @@ class GJK:
         """
         Compute the linear combination of the simplex vertices
 
-        @ i_v: Which vertex to use (0: obj1, 1: obj2, 2: minkowski)
-        @ n: Number of vertices to combine, combine the first n vertices
+        Parameters:
+        ----------
+        i_v: int
+            Which vertex to use (0: obj1, 1: obj2, 2: minkowski)
+        n: int
+            Number of vertices to combine, combine the first n vertices
         """
         res = gs.ti_vec3(0, 0, 0)
 
@@ -2855,8 +2889,7 @@ class GJK:
     @ti.func
     def func_det3(self, v1, v2, v3):
         """
-        Compute the determinant of a 3x3 matrix formed by the vectors v1, v2, v3.
-        M = [v1 | v2 | v3]
+        Compute the determinant of a 3x3 matrix M = [v1 | v2 | v3].
         """
         return (
             v1[0] * (v2[1] * v3[2] - v2[2] * v3[1])
@@ -2869,6 +2902,9 @@ class GJK:
 
     @ti.func
     def support_mesh(self, direction, i_g, i_b, i_o):
+        """
+        Find the support point on a mesh in the given direction.
+        """
         g_state = self._solver.geoms_state[i_g, i_b]
         d_mesh = gu.ti_transform_by_quat(direction, gu.ti_inv_quat(g_state.quat))
 
