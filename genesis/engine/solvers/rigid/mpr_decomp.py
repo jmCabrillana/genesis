@@ -168,22 +168,7 @@ class MPR:
 
     @ti.func
     def support_driver(self, direction, i_g, i_b):
-        v = ti.Vector.zero(gs.ti_float, 3)
-        geom_type = self._solver.geoms_info[i_g].type
-        if geom_type == gs.GEOM_TYPE.SPHERE:
-            v = self.support_field._func_support_sphere(direction, i_g, i_b, False)
-        elif geom_type == gs.GEOM_TYPE.ELLIPSOID:
-            v = self.support_field._func_support_ellipsoid(direction, i_g, i_b)
-        elif geom_type == gs.GEOM_TYPE.CAPSULE:
-            v = self.support_field._func_support_capsule(direction, i_g, i_b, False)
-        elif geom_type == gs.GEOM_TYPE.BOX:
-            v, _ = self.support_field._func_support_box(direction, i_g, i_b)
-        elif geom_type == gs.GEOM_TYPE.TERRAIN:
-            if ti.static(self._solver.collider._has_terrain):
-                v, _ = self.support_field._func_support_prism(direction, i_g, i_b)
-        else:
-            v, _ = self.support_field._func_support_world(direction, i_g, i_b)
-        return v
+        return self.support_field.driver(direction, i_g, i_b)
 
     @ti.func
     def compute_support(self, direction, i_ga, i_gb, i_b):

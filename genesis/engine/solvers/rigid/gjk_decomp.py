@@ -47,29 +47,27 @@ class GJK:
         self._solver = rigid_solver
         self._B = rigid_solver._B
 
-        # Maximum number of contact points to find per pair.
-        # It is related to the number of vertices in the contact polygon face when detecting multi-contact.
-        if self._solver._enable_mujoco_compatibility:
+        # Whether or not to use MuJoCo's multi-contact detection algorithm. Only when the MuJoCo compatibility is
+        # enabled and the multi-contact detection is enabled, we use the algorithm.
+        self.enable_mujoco_multi_contact = (
+            self._solver._enable_multi_contact and
+            self._solver._enable_mujoco_compatibility
+        )
+
+        # Maximum number of contact points to find per pair. When we use MuJoCo's multi-contact detection algorithm,
+        # the number is related to the number of vertices in the contact polygon face.
+        if self.enable_mujoco_multi_contact:
             self.max_contacts_per_pair = 50
             self.max_contact_polygon_verts = 150
         else:
-            # If we assume most of the faces are triangles or quads, 8 points should be enough (+2 for backup).
-            self.max_contacts_per_pair = 10
-            self.max_contact_polygon_verts = 30
+            # If we do not use MuJoCo's multi-contact detection algorithm, we find only one contact point per pair.
+            self.max_contacts_per_pair = 1
 
         # Maximum number of iterations for GJK and EPA algorithms
         self.gjk_max_iterations = 50
         self.epa_max_iterations = 50
 
-        # Tolerance for normal alignment between (face-face) or (edge-face) during multi-contact detection.
-        # The normals should align within this tolerance to be considered as a valid parallel contact.
-        # The values are cosine and sine of 1.6e-3, respectively.
-        # TODO: These parameters are from MuJoCo, but seem to be very strict. Need some tests to verify if they are
-        # the best values.
-        self.contact_face_tol = 0.99999872
-        self.contact_edge_tol = 0.00159999931
-
-        # When using larger minimum values, unstability could occur for some examples (e.g. box pyramid).
+        # When using larger minimum values (e.g. gs.EPS), unstability could occur for some examples (e.g. box pyramid).
         self.FLOAT_MIN = gs.np_float(1e-15)
         self.FLOAT_MIN_SQ = self.FLOAT_MIN * self.FLOAT_MIN
 
@@ -78,6 +76,7 @@ class GJK:
 
         # Tolerance for stopping GJK and EPA algorithms when they converge.
         self.tolerance = gs.np_float(1e-6)
+
         # If the distance between two objects is smaller than this value, we consider them colliding.
         self.collision_eps = gs.np_float(1e-6)
         
@@ -163,47 +162,63 @@ class GJK:
         self.polytope_horizon_stack = struct_polytope_horizon_data.field(shape=(self._B, self.polytope_max_faces * 3))
 
         ### Multi-contact
-        struct_contact_face = ti.types.struct(
-            # Face vertices
-            face1=gs.ti_vec3,
-            face2=gs.ti_vec3,
-            endverts=gs.ti_vec3,
-            # Normals of face collisions
-            normal1=gs.ti_vec3,
-            normal2=gs.ti_vec3,
-            # Face ID
-            id1=gs.ti_int,
-            id2=gs.ti_int,
-        )
-        # Struct for storing temp. contact normals
-        struct_contact_normal = ti.types.struct(
-            endverts=gs.ti_vec3,
-            # Normal vector of the contact point
-            normal=gs.ti_vec3,
-            # Face ID
-            id=gs.ti_int,
-        )
-        struct_contact_halfspace = ti.types.struct(
-            # Halfspace normal
-            normal=gs.ti_vec3,
-            # Halfspace distance from the origin
-            dist=gs.ti_float,
-        )
-        self.contact_faces = struct_contact_face.field(shape=(self._B, self.max_contact_polygon_verts))
-        self.contact_normals = struct_contact_normal.field(shape=(self._B, self.max_contact_polygon_verts))
-        self.contact_halfspaces = struct_contact_halfspace.field(shape=(self._B, self.max_contact_polygon_verts))
-        self.contact_clipped_polygons = gs.ti_vec3.field(shape=(self._B, 2, self.max_contact_polygon_verts))
+        self.multi_contact_flag = ti.field(dtype=gs.ti_int, shape=(self._B,))
+        if self.enable_mujoco_multi_contact:
+            # Tolerance for normal alignment between (face-face) or (edge-face) during MuJoCo's multi-contact detection.
+            # The normals should align within this tolerance to be considered as a valid parallel contact. The values are 
+            # cosine and sine of 1.6e-3, respectively.
+            # TODO: These parameters are from MuJoCo, but seem to be very strict. Need some tests to verify if they are
+            # the best values.
+            self.contact_face_tol = 0.99999872
+            self.contact_edge_tol = 0.00159999931
+
+            struct_contact_face = ti.types.struct(
+                # Face vertices
+                face1=gs.ti_vec3,
+                face2=gs.ti_vec3,
+                endverts=gs.ti_vec3,
+                # Normals of face collisions
+                normal1=gs.ti_vec3,
+                normal2=gs.ti_vec3,
+                # Face ID
+                id1=gs.ti_int,
+                id2=gs.ti_int,
+            )
+            # Struct for storing temp. contact normals
+            struct_contact_normal = ti.types.struct(
+                endverts=gs.ti_vec3,
+                # Normal vector of the contact point
+                normal=gs.ti_vec3,
+                # Face ID
+                id=gs.ti_int,
+            )
+            struct_contact_halfspace = ti.types.struct(
+                # Halfspace normal
+                normal=gs.ti_vec3,
+                # Halfspace distance from the origin
+                dist=gs.ti_float,
+            )
+            self.contact_faces = struct_contact_face.field(shape=(self._B, self.max_contact_polygon_verts))
+            self.contact_normals = struct_contact_normal.field(shape=(self._B, self.max_contact_polygon_verts))
+            self.contact_halfspaces = struct_contact_halfspace.field(shape=(self._B, self.max_contact_polygon_verts))
+            self.contact_clipped_polygons = gs.ti_vec3.field(shape=(self._B, 2, self.max_contact_polygon_verts))
 
         ### Final results
+        # Witness information
         struct_witness = ti.types.struct(
             # Witness points on the two objects
             point_obj1=gs.ti_vec3,
             point_obj2=gs.ti_vec3,
         )
         self.witness = struct_witness.field(shape=(self._B, self.max_contacts_per_pair))
-
-        # Number of witness points found for each pair
         self.n_witness = ti.field(dtype=gs.ti_int, shape=(self._B,))
+        
+        # Contact information
+        self.n_contacts = ti.field(dtype=gs.ti_int, shape=(self._B,))
+        self.contact_pos = gs.ti_vec3.field(shape=(self._B, self.max_contacts_per_pair))
+        self.normal = gs.ti_vec3.field(shape=(self._B, self.max_contacts_per_pair))
+        self.is_col = ti.field(dtype=gs.ti_int, shape=(self._B,))
+        self.penetration = ti.field(dtype=gs.ti_float, shape=(self._B,))
 
         # Distance between the two objects.
         # If the objects are separated, the distance is positive.
@@ -213,30 +228,32 @@ class GJK:
     @ti.func
     def clear_cache(self, i_b):
         """
-        Clear the cache information for support point query.
+        Clear the cache information.
         """
         self.support_vertex_id[i_b, 0] = -1
         self.support_vertex_id[i_b, 1] = -1
+        self.multi_contact_flag[i_b] = 0
 
     @ti.func
     def func_gjk_contact(self, i_ga, i_gb, i_b, multi_contact):
         """
-        Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms. The overall algorithm
-        is based on the MuJoCo implementation, which can be found here:
-        https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
+        Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms. 
+        
+        We first run the GJK algorithm to find the minimum distance between the two geometries. If the distance is
+        smaller than the collision epsilon, we consider the geometries colliding. If they are colliding, we run the EPA
+        algorithm to find the exact contact points and normals. Afterwards, if we want to detect multiple contacts using
+        the MuJoCo's multi-contact detection algorithm, we run the algorithm to find multiple contact points.
 
         Parameters
         ----------
         multi_contact: bool
-            If True, use multi-contact detection algorithm if the geoms are discrete.
+            Whether to use MuJoCo's multi-contact detection algorithm.
+
+        .. seealso::
+        MuJoCo's original implementation:
+        https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
         """
         self.clear_cache(i_b)
-
-        # Number of maximum contacts that we can find depending on the geometry types.
-        num_max_contacts = 1
-        if multi_contact and self.func_is_discrete_geoms(i_ga, i_gb, i_b):
-            # Not precise, just approximate.
-            num_max_contacts = 4
 
         # If any one of the geometries is a sphere or capsule, which are sphere-swept primitives, we can shrink them
         # to a point or line to detect shallow penetration faster.
@@ -315,9 +332,42 @@ class GJK:
                 i_f = self.func_epa(i_ga, i_gb, i_b)
                 distance = self.distance[i_b]
 
-                if num_max_contacts > 1 and i_f != -1:
-                    # Detect multiple contacts
-                    self.func_multi_contact(i_ga, i_gb, i_b, i_f)
+                if ti.static(self.enable_mujoco_multi_contact):
+                    # To use MuJoCo's multi-contact detection algorithm,
+                    # (1) [i_f] should be a valid face index in the polytope (>= 0),
+                    # (2) Both of the geometries should be discrete,
+                    # (3) [multi_contact] should be True.
+                    if i_f >= 0 and self.func_is_discrete_geoms(i_ga, i_gb, i_b) and multi_contact:
+                        self.func_multi_contact(i_ga, i_gb, i_b, i_f)
+                        self.multi_contact_flag[i_b] = 1
+
+        # Compute the final contact points and normals.
+        n_contacts = 0
+        self.is_col[i_b] = self.distance[i_b] < 0.0
+        self.penetration[i_b] = -self.distance[i_b] if self.is_col[i_b] else 0.0
+
+        if self.is_col[i_b]:
+            for i in range(self.n_witness[i_b]):
+                w1 = self.witness[i_b, i].point_obj1
+                w2 = self.witness[i_b, i].point_obj2
+                contact_pos = 0.5 * (w1 + w2)
+
+                normal = w2 - w1
+                normal_len = normal.norm()
+                if normal_len < gs.EPS:
+                    continue
+                
+                normal = normal / normal_len
+
+                self.contact_pos[i_b, n_contacts] = contact_pos
+                self.normal[i_b, n_contacts] = normal
+                n_contacts += 1
+
+        self.n_contacts[i_b] = n_contacts
+        # If there are no contacts, we set the penetration and is_col to 0.
+        if n_contacts == 0:
+            self.is_col[i_b] = 0
+            self.penetration[i_b] = 0.0
 
     @ti.func
     def func_gjk(self, i_ga, i_gb, i_b, shrink_sphere):

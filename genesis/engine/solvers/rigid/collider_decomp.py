@@ -565,7 +565,7 @@ class Collider:
                 direction = ti.Vector([i_axis == 0, i_axis == 1, i_axis == 2], dt=gs.ti_float)
                 direction = direction * sign
 
-                v1 = self._mpr.support_driver(direction, i_ga, i_b)
+                v1 = self._ccd.support_field.driver(direction, i_ga, i_b)
                 self.xyz_max_min[i, i_b] = v1[i_axis]
 
             for i in ti.static(range(3)):
@@ -1066,11 +1066,7 @@ class Collider:
         plane_dir = gu.ti_transform_by_quat(plane_dir, ga_state.quat)
         normal = -plane_dir.normalized()
 
-        v1 = gs.ti_vec3(0, 0, 0)
-        if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
-            v1, _ = self._ccd.support_field._func_support_box(normal, i_gb, i_b)
-        else:
-            v1 = self._ccd.support_driver(normal, i_gb, i_b)
+        v1 = self._ccd.support_field.driver(normal, i_gb, i_b)
         penetration = normal.dot(v1 - ga_state.pos)
 
         if penetration > 0.0:
@@ -1248,11 +1244,7 @@ class Collider:
                         plane_dir = gu.ti_transform_by_quat(plane_dir, self._solver.geoms_state[i_ga, i_b].quat)
                         normal = -plane_dir.normalized()
 
-                        v1 = gs.ti_vec3(0.0, 0.0, 0.0)
-                        if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
-                            v1, _ = self._ccd.support_driver(normal, i_gb, i_b, -1, False)
-                        else:
-                            v1 = self._ccd.support_driver(normal, i_gb, i_b)
+                        v1 = self._ccd.support_field.driver(normal, i_gb, i_b)
                         penetration = normal.dot(v1 - self._solver.geoms_state[i_ga, i_b].pos)
                         contact_pos = v1 - 0.5 * penetration * normal
                         is_col = penetration > 0
@@ -1294,23 +1286,29 @@ class Collider:
                                 try_sdf = True
                         ### GJK
                         elif ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
-                            self._ccd.func_gjk_contact(i_ga, i_gb, i_b, False)
+                            # If it was not the first detection, only detect single contact point.
+                            self._ccd.func_gjk_contact(i_ga, i_gb, i_b, i_detection == 0)
 
-                            distance = self._ccd.distance[i_b]
+                            is_col = (self._ccd.is_col[i_b] == 1)
+                            penetration = self._ccd.penetration[i_b]
+                            n_contacts = self._ccd.n_contacts[i_b]
 
-                            is_col = distance < 0.0
                             if is_col:
-                                penetration = -distance
-
-                                witness_a = self._ccd.witness[i_b, 0].point_obj1
-                                witness_b = self._ccd.witness[i_b, 0].point_obj2
-                                contact_pos = 0.5 * (witness_a + witness_b)
-                                normal = witness_b - witness_a
-                                normal_len = normal.norm()
-                                if normal_len < gs.EPS:
-                                    is_col = False
+                                if self._ccd.multi_contact_flag[i_b]:
+                                    # Used MuJoCo's multi-contact algorithm to find multiple contact points. Therefore,
+                                    # add the discovered contact points and stop multi-contact search.
+                                    for i_c in range(n_contacts):
+                                        if i_c >= self._n_contacts_per_pair:
+                                            # Ignore contact points if the number of contacts exceeds the limit.
+                                            break
+                                        contact_pos = self._ccd.contact_pos[i_b, i_c]
+                                        normal = self._ccd.normal[i_b, i_c]
+                                        self._func_add_contact(i_ga, i_gb, normal, contact_pos, penetration, i_b)
+                                    
+                                    break
                                 else:
-                                    normal = normal / normal_len
+                                    contact_pos = self._ccd.contact_pos[i_b, 0]
+                                    normal = self._ccd.normal[i_b, 0]
                             
                     if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.MPR_SDF):
                         if try_sdf:
