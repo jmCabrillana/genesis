@@ -47,21 +47,8 @@ class GJK:
         self._solver = rigid_solver
         self._B = rigid_solver._B
 
-        # Whether or not to use MuJoCo's multi-contact detection algorithm. Only when the MuJoCo compatibility is
-        # enabled and the multi-contact detection is enabled, we use the algorithm.
-        self.enable_mujoco_multi_contact = (
-            self._solver._enable_multi_contact and
-            self._solver._enable_mujoco_compatibility
-        )
-
-        # Maximum number of contact points to find per pair. When we use MuJoCo's multi-contact detection algorithm,
-        # the number is related to the number of vertices in the contact polygon face.
-        if self.enable_mujoco_multi_contact:
-            self.max_contacts_per_pair = 50
-            self.max_contact_polygon_verts = 150
-        else:
-            # If we do not use MuJoCo's multi-contact detection algorithm, we find only one contact point per pair.
-            self.max_contacts_per_pair = 1
+        # Maximum number of contact points to find per pair.
+        self.max_contacts_per_pair = 1
 
         # Maximum number of iterations for GJK and EPA algorithms
         self.gjk_max_iterations = 50
@@ -162,8 +149,18 @@ class GJK:
         self.polytope_horizon_stack = struct_polytope_horizon_data.field(shape=(self._B, self.polytope_max_faces * 3))
 
         ### Multi-contact
-        self.multi_contact_flag = ti.field(dtype=gs.ti_int, shape=(self._B,))
+        # Whether or not to use MuJoCo's multi-contact detection algorithm. Only when the MuJoCo compatibility is
+        # enabled and the multi-contact detection is enabled, we use the algorithm.
+        self.enable_mujoco_multi_contact = (
+            self._solver._enable_multi_contact and
+            self._solver._enable_mujoco_compatibility
+        )
         if self.enable_mujoco_multi_contact:
+            # When we use MuJoCo's multi-contact detection algorithm, the maximum number of contacts per pair is related
+            # to the maximum number of contact polygon vertices.
+            self.max_contacts_per_pair = 50
+            self.max_contact_polygon_verts = 150
+        
             # Tolerance for normal alignment between (face-face) or (edge-face) during MuJoCo's multi-contact detection.
             # The normals should align within this tolerance to be considered as a valid parallel contact. The values are 
             # cosine and sine of 1.6e-3, respectively.
@@ -202,6 +199,9 @@ class GJK:
             self.contact_normals = struct_contact_normal.field(shape=(self._B, self.max_contact_polygon_verts))
             self.contact_halfspaces = struct_contact_halfspace.field(shape=(self._B, self.max_contact_polygon_verts))
             self.contact_clipped_polygons = gs.ti_vec3.field(shape=(self._B, 2, self.max_contact_polygon_verts))
+        
+        # Whether or not the MuJoCo's multi-contact detection algorithm is used for the current pair.
+        self.multi_contact_flag = ti.field(dtype=gs.ti_int, shape=(self._B,))
 
         ### Final results
         # Witness information
