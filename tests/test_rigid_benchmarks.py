@@ -633,7 +633,7 @@ def test_cubes(factory_logger, request, n_cubes, solver, enable_island, n_envs, 
     ) as logger:
         logger.write(request.getfixturevalue("cubes"))
 
-# FIXME: When we use different solver than Newton, or increase the batch size, CUDA error occurs.
+# FIXME: When we use different solver than Newton, or increase the batch size, CUDA error occurs (RTX5090).
 @pytest.mark.parametrize("solver", [gs.constraint_solver.Newton])
 @pytest.mark.parametrize("n_cubes", [5])
 @pytest.mark.parametrize("enable_island", [False])

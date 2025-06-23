@@ -53,10 +53,12 @@ class Collider:
         else:
             self.ccd_algorithm = CCD_ALGORITHM_CODE.MPR_SDF
         
+        # FIXME: MPR is necessary because it is used for terrain collision detection
+        self._mpr = MPR(rigid_solver)
         if self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK:
             self._ccd = GJK(rigid_solver)
         else:
-            self._ccd = MPR(rigid_solver)
+            self._ccd = self._mpr
         
         # multi contact perturbation and tolerance
         if self._solver._enable_mujoco_compatibility:
@@ -565,7 +567,7 @@ class Collider:
                 direction = ti.Vector([i_axis == 0, i_axis == 1, i_axis == 2], dt=gs.ti_float)
                 direction = direction * sign
 
-                v1 = self._ccd.support_field.driver(direction, i_ga, i_b)
+                v1 = self._mpr.support_driver(direction, i_ga, i_b)
                 self.xyz_max_min[i, i_b] = v1[i_axis]
 
             for i in ti.static(range(3)):
@@ -1066,7 +1068,7 @@ class Collider:
         plane_dir = gu.ti_transform_by_quat(plane_dir, ga_state.quat)
         normal = -plane_dir.normalized()
 
-        v1 = self._ccd.support_field.driver(normal, i_gb, i_b)
+        v1 = self._mpr.support_driver(normal, i_gb, i_b)
         penetration = normal.dot(v1 - ga_state.pos)
 
         if penetration > 0.0:
@@ -1244,7 +1246,7 @@ class Collider:
                         plane_dir = gu.ti_transform_by_quat(plane_dir, self._solver.geoms_state[i_ga, i_b].quat)
                         normal = -plane_dir.normalized()
 
-                        v1 = self._ccd.support_field.driver(normal, i_gb, i_b)
+                        v1 = self._mpr.support_driver(normal, i_gb, i_b)
                         penetration = normal.dot(v1 - self._solver.geoms_state[i_ga, i_b].pos)
                         contact_pos = v1 - 0.5 * penetration * normal
                         is_col = penetration > 0

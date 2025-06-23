@@ -234,22 +234,3 @@ class SupportField:
         vid += self.solver.geoms_info[i_g].vert_start
         v = gu.ti_transform_by_trans_quat(v_, g_state.pos, g_state.quat)
         return v, vid
-    
-    @ti.func
-    def driver(self, direction, i_g, i_b):
-        v = ti.Vector.zero(gs.ti_float, 3)
-        geom_type = self.solver.geoms_info[i_g].type
-        if geom_type == gs.GEOM_TYPE.SPHERE:
-            v = self._func_support_sphere(direction, i_g, i_b, False)
-        elif geom_type == gs.GEOM_TYPE.ELLIPSOID:
-            v = self._func_support_ellipsoid(direction, i_g, i_b)
-        elif geom_type == gs.GEOM_TYPE.CAPSULE:
-            v = self._func_support_capsule(direction, i_g, i_b, False)
-        elif geom_type == gs.GEOM_TYPE.BOX:
-            v, _ = self._func_support_box(direction, i_g, i_b)
-        elif geom_type == gs.GEOM_TYPE.TERRAIN:
-            if ti.static(self.solver.collider._has_terrain):
-                v, _ = self._func_support_prism(direction, i_g, i_b)
-        else:
-            v, _ = self._func_support_world(direction, i_g, i_b)
-        return v

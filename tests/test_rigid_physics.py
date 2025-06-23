@@ -341,8 +341,9 @@ def test_simple_kinematic_chain(gs_sim, mj_sim, tol):
     ],
 )
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_walker(gs_sim, mj_sim, tol):
+def test_walker(gs_sim, mj_sim, gjk_collision, tol):
     # Force numpy seed because this test is very sensitive to the initial condition
     np.random.seed(0)
     (gs_robot,) = gs_sim.entities
@@ -351,7 +352,7 @@ def test_walker(gs_sim, mj_sim, tol):
     qvel = np.random.rand(gs_robot.n_dofs) * 0.2
 
     # Cannot simulate any longer because collision detection is very sensitive
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, qpos, qvel, num_steps=90, tol=tol)
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, qpos, qvel, num_steps=250 if gjk_collision else 90, tol=tol)
 
 
 @pytest.mark.parametrize("model_name", ["mimic_hinges"])
@@ -433,6 +434,7 @@ def test_rope_ball(gs_sim, mj_sim, gs_solver, tol):
 @pytest.mark.multi_contact(False)
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_urdf_rope(
     gs_solver,
@@ -441,6 +443,7 @@ def test_urdf_rope(
     multi_contact,
     mujoco_compatibility,
     adjacent_collision,
+    gjk_collision,
     dof_damping,
     show_viewer,
 ):
@@ -448,7 +451,14 @@ def test_urdf_rope(
     xml_path = os.path.join(asset_path, "linear_deformable.urdf")
 
     mj_sim = build_mujoco_sim(
-        xml_path, gs_solver, gs_integrator, merge_fixed_links, multi_contact, adjacent_collision, dof_damping, False
+        xml_path, 
+        gs_solver, 
+        gs_integrator, 
+        merge_fixed_links, 
+        multi_contact, 
+        adjacent_collision, 
+        dof_damping, 
+        gjk_collision
     )
     gs_sim = build_genesis_sim(
         xml_path,
@@ -458,7 +468,7 @@ def test_urdf_rope(
         multi_contact,
         mujoco_compatibility,
         adjacent_collision,
-        False,
+        gjk_collision,
         show_viewer,
         mj_sim,
     )
@@ -701,14 +711,19 @@ def test_box_box_dynamics(gs_sim):
         assert_allclose(qpos[8], 0.6, atol=2e-3)
 
 
-@pytest.mark.parametrize("box_box_detection, dynamics", [(False, False), (False, True), (True, False)])
+@pytest.mark.parametrize("box_box_detection, gjk_collision, dynamics", \
+    [(False, True, False), (False, True, True),])
+    #(False, False, False), (False, False, True), 
+    #(True, False, False)])
 @pytest.mark.parametrize("backend", [gs.cpu])  # TODO: Cannot afford GPU test for this one
-def test_many_boxes_dynamics(box_box_detection, dynamics, show_viewer):
+def test_many_boxes_dynamics(box_box_detection, gjk_collision, dynamics, show_viewer):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             dt=0.01,
             box_box_detection=box_box_detection,
             max_collision_pairs=1000,
+            use_gjk_collision=gjk_collision,
+            enable_mujoco_compatibility=True,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(10, 10, 10),
