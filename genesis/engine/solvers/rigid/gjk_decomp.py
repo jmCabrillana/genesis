@@ -1262,7 +1262,7 @@ class GJK:
 
         # Cross product with the found axis, then rotate it by 120 degrees around the axis [diff] to get three more
         # points spaced 120 degrees apart
-        rotmat = self.func_rotmat_120(diff)
+        rotmat = gu.ti_rotvec_to_R(diff * ti.math.radians(120.0))
         e = gs.ti_vec3(0.0, 0.0, 0.0)
         e[min_i] = 1.0
 
@@ -2753,33 +2753,6 @@ class GJK:
             support_point_id_obj2,
             support_point_minkowski,
         )
-
-    @ti.func
-    def func_rotmat_120(self, axis):
-        """
-        Rotation matrix for 120 degrees rotation around the given axis.
-        """
-        u = axis.normalized()
-        u1, u2, u3 = u[0], u[1], u[2]                
-
-        # sin and cos of 120 degrees
-        sin = 0.86602540378
-        cos = -0.5
-
-        # Rotation matrix from axis-angle representation
-        # https://en.wikipedia.org/wiki/Rotation_matrix#Rotation_matrix_from_axis_and_angle
-        mat = ti.Matrix.zero(gs.ti_float, 3, 3)
-        mat[0, 0] = cos + u1 * u1 * (1 - cos)
-        mat[0, 1] = u1 * u2 * (1 - cos) - u3 * sin
-        mat[0, 2] = u1 * u3 * (1 - cos) + u2 * sin
-        mat[1, 0] = u2 * u1 * (1 - cos) + u3 * sin
-        mat[1, 1] = cos + u2 * u2 * (1 - cos)
-        mat[1, 2] = u2 * u3 * (1 - cos) - u1 * sin
-        mat[2, 0] = u3 * u1 * (1 - cos) - u2 * sin
-        mat[2, 1] = u3 * u2 * (1 - cos) + u1 * sin
-        mat[2, 2] = cos + u3 * u3 * (1 - cos)
-
-        return mat
 
     @ti.func
     def func_project_origin_to_plane(self, v1, v2, v3):
