@@ -451,14 +451,14 @@ def test_urdf_rope(
     xml_path = os.path.join(asset_path, "linear_deformable.urdf")
 
     mj_sim = build_mujoco_sim(
-        xml_path, 
-        gs_solver, 
-        gs_integrator, 
-        merge_fixed_links, 
-        multi_contact, 
-        adjacent_collision, 
-        dof_damping, 
-        gjk_collision
+        xml_path,
+        gs_solver,
+        gs_integrator,
+        merge_fixed_links,
+        multi_contact,
+        adjacent_collision,
+        dof_damping,
+        gjk_collision,
     )
     gs_sim = build_genesis_sim(
         xml_path,
@@ -711,10 +711,15 @@ def test_box_box_dynamics(gs_sim):
         assert_allclose(qpos[8], 0.6, atol=2e-3)
 
 
-@pytest.mark.parametrize("box_box_detection, gjk_collision, dynamics", \
-    [(False, True, False), (False, True, True),])
-    #(False, False, False), (False, False, True), 
-    #(True, False, False)])
+@pytest.mark.parametrize(
+    "box_box_detection, gjk_collision, dynamics",
+    [
+        (False, True, False),
+        (False, True, True),
+    ],
+)
+# (False, False, False), (False, False, True),
+# (True, False, False)])
 @pytest.mark.parametrize("backend", [gs.cpu])  # TODO: Cannot afford GPU test for this one
 def test_many_boxes_dynamics(box_box_detection, gjk_collision, dynamics, show_viewer):
     scene = gs.Scene(
@@ -723,7 +728,6 @@ def test_many_boxes_dynamics(box_box_detection, gjk_collision, dynamics, show_vi
             box_box_detection=box_box_detection,
             max_collision_pairs=1000,
             use_gjk_collision=gjk_collision,
-            enable_mujoco_compatibility=True,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(10, 10, 10),
@@ -1179,6 +1183,7 @@ def test_set_sol_params(n_envs, batched, tol):
 @pytest.mark.parametrize("xml_path", ["xml/humanoid.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
 def test_stickman(gs_sim, mj_sim, tol):
     # Make sure that "static" model information are matching
@@ -1404,7 +1409,8 @@ def test_suction_cup(mode, show_viewer):
 @pytest.mark.required
 @pytest.mark.skipif(sys.platform == "win32", reason="OMPL is not supported on Windows OS.")
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
-def test_path_planning_avoidance(show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_path_planning_avoidance(show_viewer, gjk_collision):
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=0.01,
@@ -1414,6 +1420,9 @@ def test_path_planning_avoidance(show_viewer):
             camera_lookat=(0.0, 0.0, 0.5),
             camera_fov=30,
             max_FPS=60,
+        ),
+        rigid_options=gs.options.RigidOptions(
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1609,12 +1618,16 @@ def test_contact_forces(show_viewer, tol):
 
 @pytest.mark.required
 @pytest.mark.parametrize("model_name", ["double_ball_pendulum"])
-def test_apply_external_forces(xml_path, show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_apply_external_forces(xml_path, show_viewer, gjk_collision):
     scene = gs.Scene(
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(0, -3.5, 2.5),
             camera_lookat=(0.0, 0.0, 1.0),
             camera_fov=40,
+        ),
+        rigid_options=gs.options.RigidOptions(
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1691,10 +1704,14 @@ def test_mass_mat(show_viewer, tol):
 
 
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_nonconvex_collision(show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_nonconvex_collision(show_viewer, gjk_collision):
     scene = gs.Scene(
         show_viewer=show_viewer,
         show_FPS=False,
+        rigid_options=gs.options.RigidOptions(
+            use_gjk_collision=gjk_collision,
+        ),
     )
     tank = scene.add_entity(
         gs.morphs.Mesh(
@@ -1729,10 +1746,14 @@ def test_nonconvex_collision(show_viewer):
 
 @pytest.mark.parametrize("convexify", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_mesh_repair(convexify, show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_mesh_repair(convexify, show_viewer, gjk_collision):
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=0.004,
+        ),
+        rigid_options=gs.options.RigidOptions(
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1779,7 +1800,8 @@ def test_mesh_repair(convexify, show_viewer):
 @pytest.mark.required
 @pytest.mark.parametrize("euler", [(90, 0, 90), (76, 15, 90)])
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
-def test_convexify(euler, backend, show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_convexify(euler, backend, show_viewer, gjk_collision):
     OBJ_OFFSET_X = 0.0  # 0.02
     OBJ_OFFSET_Y = 0.15
 
@@ -1789,6 +1811,7 @@ def test_convexify(euler, backend, show_viewer):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             dt=0.004,
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1897,7 +1920,8 @@ def test_collision_edge_cases(gs_sim, mode):
 
 @pytest.mark.required
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_collision_plane_convex(show_viewer, tol):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_collision_plane_convex(show_viewer, tol, gjk_collision):
     for morph in (
         gs.morphs.Plane(),
         gs.morphs.Box(
@@ -1915,6 +1939,9 @@ def test_collision_plane_convex(show_viewer, tol):
                 camera_lookat=(0.5, 0.0, 0.0),
                 camera_fov=30,
                 max_FPS=60,
+            ),
+            rigid_options=gs.options.RigidOptions(
+                use_gjk_collision=gjk_collision,
             ),
             show_viewer=show_viewer,
             show_FPS=False,
@@ -1966,10 +1993,12 @@ def test_nan_reset(gs_sim, mode):
 
 
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
-def test_terrain_generation(show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True])
+def test_terrain_generation(show_viewer, gjk_collision):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             dt=0.01,
+            use_gjk_collision=gjk_collision,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(-5.0, -5.0, 10.0),
@@ -2192,7 +2221,8 @@ def test_drone_hover_same_with_and_without_substeps(show_viewer, tol):
 
 @pytest.mark.required
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_drone_advanced(show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_drone_advanced(show_viewer, gjk_collision):
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=0.005,
@@ -2202,6 +2232,9 @@ def test_drone_advanced(show_viewer):
             camera_lookat=(0.0, 0.0, 0.5),
             camera_fov=30,
             max_FPS=60,
+        ),
+        rigid_options=gs.options.RigidOptions(
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -2469,12 +2502,16 @@ def test_data_accessor(n_envs, batched, tol):
 
 
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_mesh_to_heightfield(show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_mesh_to_heightfield(show_viewer, gjk_collision):
     ########################## create a scene ##########################
     scene = gs.Scene(
         show_viewer=show_viewer,
         sim_options=gs.options.SimOptions(
             gravity=(2, 0, -2),
+        ),
+        rigid_options=gs.options.RigidOptions(
+            use_gjk_collision=gjk_collision,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(0, -50, 0),
@@ -2518,8 +2555,9 @@ def test_mesh_to_heightfield(show_viewer):
     qvel = ball.get_dofs_velocity().cpu()
     assert_allclose(qvel, 0, atol=1e-2)
 
+
 @pytest.mark.mujoco_compatibility(True)
-@pytest.mark.multi_contact(False)   # FIXME: Mujoco has errors with multi-contact, so this test is disabled
+@pytest.mark.multi_contact(False)  # FIXME: Mujoco has errors with multi-contact, so this test is disabled
 @pytest.mark.parametrize("xml_path", ["xml/tet_tet.xml", "xml/tet_ball.xml", "xml/tet_capsule.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
@@ -2532,7 +2570,7 @@ def test_tet_primitive_shapes(gs_sim, mj_sim, gs_solver, xml_path, tol):
     check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
     if xml_path == "xml/tet_tet.xml":
         # FIXME: Because of very small numerical error, error could be this large even if there is no logical error
-        tol = 1e-6  
+        tol = 1e-6
     else:
         tol = 2e-8
     simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)

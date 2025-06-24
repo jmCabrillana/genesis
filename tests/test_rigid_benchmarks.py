@@ -539,6 +539,7 @@ def cubes(solver, n_envs, n_cubes, enable_island, gjk):
 
     return {"compile_time": compile_time, "runtime_fps": runtime_fps, "realtime_factor": realtime_factor}
 
+
 @pytest.fixture
 def box_pyramid(solver, n_envs, n_cubes, enable_island, gjk, enable_mujoco_compatibility):
     x_pos = 0.0
@@ -573,7 +574,9 @@ def box_pyramid(solver, n_envs, n_cubes, enable_island, gjk, enable_mujoco_compa
     for i in range(n_cubes):
         for j in range(n_cubes - i):
             scene.add_entity(
-                gs.morphs.Box(size=box_size * vec_one, pos=box_pos_offset + box_spacing * np.array([i + 0.5 * j, 0, j])),
+                gs.morphs.Box(
+                    size=box_size * vec_one, pos=box_pos_offset + box_spacing * np.array([i + 0.5 * j, 0, j])
+                ),
             )
 
     time_start = time.time()
@@ -632,6 +635,7 @@ def test_cubes(factory_logger, request, n_cubes, solver, enable_island, n_envs, 
         }
     ) as logger:
         logger.write(request.getfixturevalue("cubes"))
+
 
 # FIXME: When we use different solver than Newton, or increase the batch size, CUDA error occurs (RTX5090).
 @pytest.mark.parametrize("solver", [gs.constraint_solver.Newton])

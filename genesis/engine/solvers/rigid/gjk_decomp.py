@@ -66,7 +66,7 @@ class GJK:
 
         # If the distance between two objects is smaller than this value, we consider them colliding.
         self.collision_eps = gs.np_float(1e-6)
-        
+
         ### Supports for GJK-EPA
         # Cache for support points
         self.support_vertex_id = ti.field(dtype=gs.ti_int, shape=(self._B, 2))
@@ -152,17 +152,16 @@ class GJK:
         # Whether or not to use MuJoCo's multi-contact detection algorithm. Only when the MuJoCo compatibility is
         # enabled and the multi-contact detection is enabled, we use the algorithm.
         self.enable_mujoco_multi_contact = (
-            self._solver._enable_multi_contact and
-            self._solver._enable_mujoco_compatibility
+            self._solver._enable_multi_contact and self._solver._enable_mujoco_compatibility
         )
         if self.enable_mujoco_multi_contact:
             # When we use MuJoCo's multi-contact detection algorithm, the maximum number of contacts per pair is related
             # to the maximum number of contact polygon vertices.
             self.max_contacts_per_pair = 50
             self.max_contact_polygon_verts = 150
-        
+
             # Tolerance for normal alignment between (face-face) or (edge-face) during MuJoCo's multi-contact detection.
-            # The normals should align within this tolerance to be considered as a valid parallel contact. The values 
+            # The normals should align within this tolerance to be considered as a valid parallel contact. The values
             # are cosine and sine of 1.6e-3, respectively.
             # TODO: These parameters are from MuJoCo, but seem to be very strict. Need some tests to verify if they are
             # the best values.
@@ -199,7 +198,7 @@ class GJK:
             self.contact_normals = struct_contact_normal.field(shape=(self._B, self.max_contact_polygon_verts))
             self.contact_halfspaces = struct_contact_halfspace.field(shape=(self._B, self.max_contact_polygon_verts))
             self.contact_clipped_polygons = gs.ti_vec3.field(shape=(self._B, 2, self.max_contact_polygon_verts))
-        
+
         # Whether or not the MuJoCo's multi-contact detection algorithm is used for the current pair.
         self.multi_contact_flag = ti.field(dtype=gs.ti_int, shape=(self._B,))
 
@@ -212,7 +211,7 @@ class GJK:
         )
         self.witness = struct_witness.field(shape=(self._B, self.max_contacts_per_pair))
         self.n_witness = ti.field(dtype=gs.ti_int, shape=(self._B,))
-        
+
         # Contact information
         self.n_contacts = ti.field(dtype=gs.ti_int, shape=(self._B,))
         self.contact_pos = gs.ti_vec3.field(shape=(self._B, self.max_contacts_per_pair))
@@ -237,8 +236,8 @@ class GJK:
     @ti.func
     def func_gjk_contact(self, i_ga, i_gb, i_b, multi_contact):
         """
-        Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms. 
-        
+        Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms.
+
         We first run the GJK algorithm to find the minimum distance between the two geometries. If the distance is
         smaller than the collision epsilon, we consider the geometries colliding. If they are colliding, we run the EPA
         algorithm to find the exact contact points and normals. Afterwards, if we want to detect multiple contacts using
@@ -356,7 +355,7 @@ class GJK:
                 normal_len = normal.norm()
                 if normal_len < gs.EPS:
                     continue
-                
+
                 normal = normal / normal_len
 
                 self.contact_pos[i_b, n_contacts] = contact_pos
@@ -373,9 +372,9 @@ class GJK:
     def func_gjk(self, i_ga, i_gb, i_b, shrink_sphere):
         """
         GJK algorithm to compute the minimum distance between two convex objects.
-         
+
         This implementation is based on the MuJoCo implementation.
-        
+
         TODO: This implementation could be further improved by referencing the follow-up work shown below.
 
         Parameters
@@ -399,7 +398,7 @@ class GJK:
         Proceedings of international conference on robotics and automation. Vol. 4. IEEE, 1997.
         https://www.cs.ox.ac.uk/people/stephen.cameron/distances/gjk2.4/
 
-        Montaut, Louis, et al. "Collision detection accelerated: An optimization perspective." 
+        Montaut, Louis, et al. "Collision detection accelerated: An optimization perspective."
         https://arxiv.org/abs/2205.09663
         """
 
@@ -1404,8 +1403,8 @@ class GJK:
                 v = v4 if i == 0 else v5
                 tets_has_origin[i] = self.func_origin_tetra_intersection(v1, v2, v3, v)
 
-            # @TODO: It's possible for GJK to return a triangle with origin not contained in it but within tolerance 
-            # from it. In that case, the hexahedron could possibly be constructed that does ont contain the origin, but 
+            # @TODO: It's possible for GJK to return a triangle with origin not contained in it but within tolerance
+            # from it. In that case, the hexahedron could possibly be constructed that does ont contain the origin, but
             # there is penetration depth.
             if self.simplex[i_b].dist > 10 * self.FLOAT_MIN and (not tets_has_origin[0]) and (not tets_has_origin[1]):
                 flag = EPA_RETURN_CODE.P3_MISSING_ORIGIN
@@ -1934,7 +1933,7 @@ class GJK:
     def func_simplex_dim(self, v1i, v2i, v3i, v1, v2, v3):
         """
         Determine the dimension of the given simplex (1-3).
-        
+
         If every point is the same, 1-dim. If two points are the same, 2-dim. If all points are different, 3-dim.
         """
         dim = 0
@@ -2113,7 +2112,7 @@ class GJK:
         g_quat = g_state.quat
         local_dir = gu.ti_transform_by_quat(dir, gu.ti_inv_quat(g_quat))
         local_dir = local_dir.normalized()
-        
+
         # Determine the closest face normal
         flag = 0
         for i in range(6):
@@ -2129,7 +2128,7 @@ class GJK:
     @ti.func
     def func_potential_mesh_normals(self, i_g, i_b, dim, v1, v2, v3):
         """
-        For a simplex defined on a mesh with three vertices [v1, v2, v3], 
+        For a simplex defined on a mesh with three vertices [v1, v2, v3],
         we find which face normals are potentially related to the simplex.
 
         If the simplex is a triangle, at most one face normal is related.
@@ -2147,7 +2146,7 @@ class GJK:
         n_normals = 0
 
         # Exhaustive search for the face normals
-        # @TODO: This would require a lot of cost if the mesh is large. It would be better to precompute adjacency 
+        # @TODO: This would require a lot of cost if the mesh is large. It would be better to precompute adjacency
         # information in the solver and use it here.
         face_start = self._solver.geoms_info[i_g].face_start
         face_end = self._solver.geoms_info[i_g].face_end
@@ -2378,9 +2377,9 @@ class GJK:
         g_size_z = self._solver.geoms_info[i_g].data[2]
 
         # Axis to fix, 0: x, 1: y, 2: z
-        axis = face_idx // 2           
+        axis = face_idx // 2
         # Side of the fixed axis, 1: positive, -1: negative
-        side = 1 - 2 * (face_idx & 1) 
+        side = 1 - 2 * (face_idx & 1)
 
         nface = 4 if face_idx >= 0 and face_idx < 6 else 0
 
@@ -2405,7 +2404,7 @@ class GJK:
                 vs[3 * i + 0] = s[0] * g_size_x
                 vs[3 * i + 1] = s[1] * g_size_y
                 vs[3 * i + 2] = s[2] * g_size_z
-            
+
         # Get geometry position and quaternion
         g_state = self._solver.geoms_state[i_g, i_b]
         g_pos = g_state.pos
@@ -2604,7 +2603,7 @@ class GJK:
     @ti.func
     def func_plane_intersect(self, pn, pd, v1, v2):
         """
-        Compute the intersection point of the line segment [v1, v2] 
+        Compute the intersection point of the line segment [v1, v2]
         with the plane defined by the normal [pn] and distance [pd].
 
         v1 + t * (v2 - v1) = intersection point
@@ -2790,7 +2789,7 @@ class GJK:
                 point = n * (nv / nn)
                 flag = 0
                 break
-            
+
             # Last fallback if no valid normal was found
             if i == 2:
                 # If the normal is still unreliable, cannot project.
