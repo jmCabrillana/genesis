@@ -322,6 +322,7 @@ def test_box_plane_dynamics(gs_sim, mj_sim, tol):
 @pytest.mark.parametrize("model_name", ["chain_capsule_hinge_mesh"])  # FIXME: , "chain_capsule_hinge_capsule"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_simple_kinematic_chain(gs_sim, mj_sim, tol):
     simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=200, tol=tol)
@@ -339,8 +340,9 @@ def test_simple_kinematic_chain(gs_sim, mj_sim, tol):
     ],
 )
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_walker(gs_sim, mj_sim, tol):
+def test_walker(gs_sim, mj_sim, gjk_collision, tol):
     # Force numpy seed because this test is very sensitive to the initial condition
     np.random.seed(0)
     (gs_robot,) = gs_sim.entities
@@ -349,7 +351,7 @@ def test_walker(gs_sim, mj_sim, tol):
     qvel = np.random.rand(gs_robot.n_dofs) * 0.2
 
     # Cannot simulate any longer because collision detection is very sensitive
-    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, qpos, qvel, num_steps=90, tol=tol)
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, qpos, qvel, num_steps=250 if gjk_collision else 90, tol=tol)
 
 
 @pytest.mark.parametrize("model_name", ["mimic_hinges"])
@@ -417,6 +419,7 @@ def test_one_ball_joint(gs_sim, mj_sim, tol):
 @pytest.mark.parametrize("xml_path", ["xml/rope_ball.xml", "xml/rope_hinge.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_rope_ball(gs_sim, mj_sim, gs_solver, tol):
     # Make sure it is possible to set the configuration vector without failure
@@ -430,6 +433,7 @@ def test_rope_ball(gs_sim, mj_sim, gs_solver, tol):
 @pytest.mark.multi_contact(False)
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast])
+@pytest.mark.parametrize("gjk_collision", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_urdf_rope(
     gs_solver,
@@ -438,6 +442,7 @@ def test_urdf_rope(
     multi_contact,
     mujoco_compatibility,
     adjacent_collision,
+    gjk_collision,
     dof_damping,
     show_viewer,
 ):
@@ -445,7 +450,14 @@ def test_urdf_rope(
     xml_path = os.path.join(asset_path, "linear_deformable.urdf")
 
     mj_sim = build_mujoco_sim(
-        xml_path, gs_solver, gs_integrator, merge_fixed_links, multi_contact, adjacent_collision, dof_damping
+        xml_path,
+        gs_solver,
+        gs_integrator,
+        merge_fixed_links,
+        multi_contact,
+        adjacent_collision,
+        dof_damping,
+        gjk_collision,
     )
     gs_sim = build_genesis_sim(
         xml_path,
@@ -455,6 +467,7 @@ def test_urdf_rope(
         multi_contact,
         mujoco_compatibility,
         adjacent_collision,
+        gjk_collision,
         show_viewer,
         mj_sim,
     )
@@ -697,14 +710,23 @@ def test_box_box_dynamics(gs_sim):
         assert_allclose(qpos[8], 0.6, atol=2e-3)
 
 
-@pytest.mark.parametrize("box_box_detection, dynamics", [(False, False), (False, True), (True, False)])
+@pytest.mark.parametrize(
+    "box_box_detection, gjk_collision, dynamics",
+    [
+        (True, False, False),
+        (False, False, False),
+        (False, False, True),
+        (False, True, False),
+    ],
+)
 @pytest.mark.parametrize("backend", [gs.cpu])  # TODO: Cannot afford GPU test for this one
-def test_many_boxes_dynamics(box_box_detection, dynamics, show_viewer):
+def test_many_boxes_dynamics(box_box_detection, gjk_collision, dynamics, show_viewer):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             dt=0.01,
             box_box_detection=box_box_detection,
             max_collision_pairs=1000,
+            use_gjk_collision=gjk_collision,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(10, 10, 10),
@@ -1160,6 +1182,7 @@ def test_set_sol_params(n_envs, batched, tol):
 @pytest.mark.parametrize("xml_path", ["xml/humanoid.xml"])
 @pytest.mark.parametrize("gs_solver", [gs.constraint_solver.Newton])
 @pytest.mark.parametrize("gs_integrator", [gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
 def test_stickman(gs_sim, mj_sim, tol):
     # Make sure that "static" model information are matching
@@ -1385,7 +1408,7 @@ def test_suction_cup(mode, show_viewer):
 @pytest.mark.required
 @pytest.mark.skipif(sys.platform == "win32", reason="OMPL is not supported on Windows OS.")
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
-def test_path_planning_avoidance(show_viewer):
+def test_path_planning_avoidance(show_viewer, gjk_collision):
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=0.01,
@@ -1710,10 +1733,14 @@ def test_nonconvex_collision(show_viewer):
 
 @pytest.mark.parametrize("convexify", [True, False])
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_mesh_repair(convexify, show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_mesh_repair(convexify, show_viewer, gjk_collision):
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=0.004,
+        ),
+        rigid_options=gs.options.RigidOptions(
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -1760,7 +1787,8 @@ def test_mesh_repair(convexify, show_viewer):
 @pytest.mark.required
 @pytest.mark.parametrize("euler", [(90, 0, 90), (76, 15, 90)])
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
-def test_convexify(euler, backend, show_viewer):
+@pytest.mark.parametrize("gjk_collision", [True, False])
+def test_convexify(euler, backend, show_viewer, gjk_collision):
     OBJ_OFFSET_X = 0.0  # 0.02
     OBJ_OFFSET_Y = 0.15
 
@@ -1770,6 +1798,7 @@ def test_convexify(euler, backend, show_viewer):
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
             dt=0.004,
+            use_gjk_collision=gjk_collision,
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -2204,7 +2233,7 @@ def test_drone_hover_same_with_and_without_substeps(show_viewer, tol):
 
 @pytest.mark.required
 @pytest.mark.parametrize("backend", [gs.cpu])
-def test_drone_advanced(show_viewer):
+def test_drone_advanced(show_viewer, gjk_collision):
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=0.005,
@@ -2529,3 +2558,20 @@ def test_mesh_to_heightfield(show_viewer):
     # speed is around 0
     qvel = ball.get_dofs_velocity().cpu()
     assert_allclose(qvel, 0, atol=1e-2)
+
+
+@pytest.mark.mujoco_compatibility(True)
+@pytest.mark.multi_contact(False)  # FIXME: Mujoco has errors with multi-contact, so this test is disabled
+@pytest.mark.parametrize("xml_path", ["xml/tet_tet.xml", "xml/tet_ball.xml", "xml/tet_capsule.xml"])
+@pytest.mark.parametrize("gs_solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
+@pytest.mark.parametrize("gs_integrator", [gs.integrator.implicitfast, gs.integrator.Euler])
+@pytest.mark.parametrize("gjk_collision", [True])
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_tet_primitive_shapes(gs_sim, mj_sim, gs_solver, xml_path, tol):
+    # Make sure it is possible to set the configuration vector without failure
+    gs_sim.rigid_solver.set_dofs_position(gs_sim.rigid_solver.get_dofs_position())
+
+    check_mujoco_model_consistency(gs_sim, mj_sim, tol=tol)
+    # FIXME: Because of very small numerical error, error could be this large even if there is no logical error
+    tol = 1e-6 if xml_path == "xml/tet_tet.xml" else 2e-8
+    simulate_and_check_mujoco_consistency(gs_sim, mj_sim, num_steps=1000, tol=tol)
