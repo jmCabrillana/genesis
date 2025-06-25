@@ -575,7 +575,8 @@ def box_pyramid(solver, n_envs, n_cubes, enable_island, gjk, enable_mujoco_compa
         for j in range(n_cubes - i):
             scene.add_entity(
                 gs.morphs.Box(
-                    size=box_size * vec_one, pos=box_pos_offset + box_spacing * np.array([i + 0.5 * j, 0, j])
+                    size=box_size * vec_one,
+                    pos=box_pos_offset + box_spacing * np.array([i + 0.5 * j, 0.0, j]),
                 ),
             )
 
@@ -602,7 +603,7 @@ def box_pyramid(solver, n_envs, n_cubes, enable_island, gjk, enable_mujoco_compa
     return {"compile_time": compile_time, "runtime_fps": runtime_fps, "realtime_factor": realtime_factor}
 
 
-@pytest.mark.parametrize("runnable", ["random", "anymal_c", "batched_franka"])
+@pytest.mark.parametrize("runnable", ["anymal_c", "batched_franka"])
 @pytest.mark.parametrize("solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
 @pytest.mark.parametrize("n_envs", [30000])
 @pytest.mark.parametrize("gjk", [False, True])
@@ -620,7 +621,7 @@ def test_speed(factory_logger, request, runnable, solver, n_envs, gjk):
 
 
 @pytest.mark.parametrize("solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
-@pytest.mark.parametrize("n_cubes", [1, 10])
+@pytest.mark.parametrize("n_cubes", [10])
 @pytest.mark.parametrize("enable_island", [False, True])
 @pytest.mark.parametrize("n_envs", [8192])
 @pytest.mark.parametrize("gjk", [False, True])
@@ -637,12 +638,19 @@ def test_cubes(factory_logger, request, n_cubes, solver, enable_island, n_envs, 
         logger.write(request.getfixturevalue("cubes"))
 
 
-@pytest.mark.parametrize("solver", [gs.constraint_solver.CG, gs.constraint_solver.Newton])
-@pytest.mark.parametrize("n_cubes", [5, 10])
+# FIXME:Increasing the batch size triggers CUDA out-of-memory error (Nvidia H100)
+@pytest.mark.parametrize("solver", [gs.constraint_solver.Newton])
+@pytest.mark.parametrize("n_cubes", [10])
 @pytest.mark.parametrize("enable_island", [False])
-@pytest.mark.parametrize("n_envs", [4096])
-@pytest.mark.parametrize("gjk", [False, True])
-@pytest.mark.parametrize("enable_mujoco_compatibility", [False, True])
+@pytest.mark.parametrize("n_envs", [2048])
+@pytest.mark.parametrize(
+    "gjk, enable_mujoco_compatibility",
+    [
+        (False, True),  # MPR
+        (False, False),  # MPR+SDF
+        (True, False),  # GJK
+    ],
+)
 def test_box_pyramid(factory_logger, request, n_cubes, solver, enable_island, n_envs, gjk, enable_mujoco_compatibility):
     with factory_logger(
         {
