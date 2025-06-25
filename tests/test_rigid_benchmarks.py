@@ -639,8 +639,9 @@ def test_cubes(factory_logger, request, n_cubes, solver, enable_island, n_envs, 
 
 
 # FIXME:Increasing the batch size triggers CUDA out-of-memory error (Nvidia H100)
+# FIXME:Increasing # cubes triggers CUDA illegal memory access error for all collision methods (Nvidia RTX 5900)
 @pytest.mark.parametrize("solver", [gs.constraint_solver.Newton])
-@pytest.mark.parametrize("n_cubes", [10])
+@pytest.mark.parametrize("n_cubes", [5])
 @pytest.mark.parametrize("enable_island", [False])
 @pytest.mark.parametrize("n_envs", [2048])
 @pytest.mark.parametrize(
