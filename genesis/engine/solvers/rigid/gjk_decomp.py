@@ -263,6 +263,7 @@ class GJK:
         MuJoCo's original implementation:
         https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
         """
+        print("GJK contact detection:", i_ga, i_gb, "multi_contact:", multi_contact)
         self.clear_cache(i_b)
 
         # If any one of the geometries is a sphere or capsule, which are sphere-swept primitives, we can shrink them
@@ -306,7 +307,7 @@ class GJK:
         nsimplex = self.nsimplex[i_b]
         collided = distance < self.collision_eps
 
-        # print("GJK distance:", distance, "nsimplex:", nsimplex, "collided:", collided)
+        print("GJK distance:", distance, "nsimplex:", nsimplex, "collided:", collided)
 
         # To run EPA, we need following conditions:
         # 1. We did not find min. distance with shrink_sphere flag
@@ -341,14 +342,14 @@ class GJK:
             ):
                 polytope_flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
 
-            # print("EPA polytope init flag:", polytope_flag)
+            print("EPA polytope init flag:", polytope_flag)
 
             # Run EPA from the polytope
             if polytope_flag == RETURN_CODE.SUCCESS:
                 i_f = self.func_epa(i_ga, i_gb, i_b)
                 distance = self.distance[i_b]
 
-                #print("EPA distance:", distance, "nsimplex:", self.nsimplex[i_b], "i_f:", i_f)
+                print("EPA distance:", distance, "nsimplex:", self.nsimplex[i_b], "i_f:", i_f)
 
                 if ti.static(self.enable_mujoco_multi_contact):
                     # To use MuJoCo's multi-contact detection algorithm,

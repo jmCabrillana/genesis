@@ -1386,6 +1386,9 @@ class Collider:
                                 penetration = penetration_b
                                 contact_pos = contact_pos_b
 
+                print("[Genesis] Narrow phase convex vs convex contact:", i_ga, i_gb, i_b)
+                print("is_col:", is_col, "normal:", f"{normal:.20g}", "penetration:", f"{penetration:.20g}", "contact_pos:", f"{contact_pos:.20g}")
+
                 if i_detection == 0:
                     is_col_0, normal_0, penetration_0, contact_pos_0 = is_col, normal, penetration, contact_pos
                     if is_col_0:
