@@ -1104,6 +1104,7 @@ class Collider:
 
     @ti.func
     def _func_add_contact(self, i_ga, i_gb, normal, contact_pos, penetration, i_b):
+        # print("Adding contact:", i_ga, i_gb, normal, contact_pos, penetration, i_b)
         i_col = self.n_contacts[i_b]
 
         if i_col == self._max_contact_pairs:
@@ -1242,6 +1243,8 @@ class Collider:
             axis_1 = ti.Vector.zero(gs.ti_float, 3)
             qrot = ti.Vector.zero(gs.ti_float, 4)
 
+            # print("[Genesis] Narrow phase convex vs convex contact:", i_ga, i_gb, i_b)
+
             for i_detection in range(5):
                 if multi_contact and is_col_0:
                     # Perturbation axis must not be aligned with the principal axes of inertia the geometry,
@@ -1310,6 +1313,7 @@ class Collider:
 
                             if is_col:
                                 if self._gjk.multi_contact_flag[i_b]:
+                                    #print("[Genesis] Adding multiple contacts for pair:", i_ga, i_gb, i_b)
                                     # Used MuJoCo's multi-contact algorithm to find multiple contact points. Therefore,
                                     # add the discovered contact points and stop multi-contact search.
                                     for i_c in range(n_contacts):
@@ -1399,47 +1403,47 @@ class Collider:
                         self.contact_cache[i_ga, i_gb, i_b].normal.fill(0.0)
 
                 elif multi_contact and is_col_0 > 0 and is_col > 0:
-                    if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.MPR_SDF):
-                        # 1. Project the contact point on both geometries
-                        # 2. Revert the effect of small rotation
-                        # 3. Update contact point
-                        contact_point_a = (
-                            gu.ti_transform_by_quat(
-                                (contact_pos - 0.5 * penetration * normal) - contact_pos_0,
-                                gu.ti_inv_quat(qrot),
-                            )
-                            + contact_pos_0
+                    # if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.MPR_SDF):
+                    # 1. Project the contact point on both geometries
+                    # 2. Revert the effect of small rotation
+                    # 3. Update contact point
+                    contact_point_a = (
+                        gu.ti_transform_by_quat(
+                            (contact_pos - 0.5 * penetration * normal) - contact_pos_0,
+                            gu.ti_inv_quat(qrot),
                         )
-                        contact_point_b = (
-                            gu.ti_transform_by_quat(
-                                (contact_pos + 0.5 * penetration * normal) - contact_pos_0,
-                                qrot,
-                            )
-                            + contact_pos_0
+                        + contact_pos_0
+                    )
+                    contact_point_b = (
+                        gu.ti_transform_by_quat(
+                            (contact_pos + 0.5 * penetration * normal) - contact_pos_0,
+                            qrot,
                         )
-                        contact_pos = 0.5 * (contact_point_a + contact_point_b)
+                        + contact_pos_0
+                    )
+                    contact_pos = 0.5 * (contact_point_a + contact_point_b)
 
-                        # First-order correction of the normal direction.
-                        # The way the contact normal gets twisted by applying perturbation of geometry poses is
-                        # unpredictable as it depends on the final portal discovered by MPR. Alternatively, let compute
-                        # the mininal rotation that makes the corrected twisted normal as closed as possible to the
-                        # original one, up to the scale of the perturbation, then apply first-order Taylor expension of
-                        # Rodrigues' rotation formula.
-                        twist_rotvec = ti.math.clamp(
-                            normal.cross(normal_0), -self._mc_perturbation, self._mc_perturbation
-                        )
-                        normal += twist_rotvec.cross(normal)
+                    # First-order correction of the normal direction.
+                    # The way the contact normal gets twisted by applying perturbation of geometry poses is
+                    # unpredictable as it depends on the final portal discovered by MPR. Alternatively, let compute
+                    # the mininal rotation that makes the corrected twisted normal as closed as possible to the
+                    # original one, up to the scale of the perturbation, then apply first-order Taylor expension of
+                    # Rodrigues' rotation formula.
+                    twist_rotvec = ti.math.clamp(
+                        normal.cross(normal_0), -self._mc_perturbation, self._mc_perturbation
+                    )
+                    normal += twist_rotvec.cross(normal)
 
-                        # Make sure that the penetration is still positive before adding contact point.
-                        # Note that adding some negative tolerance improves physical stability by encouraging persistent
-                        # contact points and thefore more continuous contact forces, without changing the mean-field
-                        # dynamics since zero-penetration contact points should not induce any force.
-                        penetration = normal.dot(contact_point_b - contact_point_a)
+                    # Make sure that the penetration is still positive before adding contact point.
+                    # Note that adding some negative tolerance improves physical stability by encouraging persistent
+                    # contact points and thefore more continuous contact forces, without changing the mean-field
+                    # dynamics since zero-penetration contact points should not induce any force.
+                    penetration = normal.dot(contact_point_b - contact_point_a)
 
-                    elif ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
-                        # Only change penetration to the initial one, because the normal vector could change abruptly
-                        # under GJK-EPA as the nearest simplex is determined by discrete logic, unlike MPR.
-                        penetration = penetration_0
+                    # elif ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
+                    #     # Only change penetration to the initial one, because the normal vector could change abruptly
+                    #     # under GJK-EPA as the nearest simplex is determined by discrete logic, unlike MPR.
+                    #     penetration = penetration_0
 
                     # Discard contact point is repeated
                     repeated = False
