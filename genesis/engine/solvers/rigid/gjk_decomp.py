@@ -258,7 +258,7 @@ class GJK:
 
         gjk_flag = self.func_gjk_discrete(i_ga, i_gb, i_b)
 
-        print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "intersect:", gjk_flag == RETURN_CODE.GJK_INTERSECT)
+        #print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "intersect:", gjk_flag == RETURN_CODE.GJK_INTERSECT)
 
         distance = self.distance[i_b]
         nsimplex = self.nsimplex[i_b]
@@ -281,36 +281,22 @@ class GJK:
             self.polytope[i_b].horizon_nedges = 0
 
             # Construct the initial polytope from the GJK simplex
-            polytope_flag = RETURN_CODE.SUCCESS
-            if nsimplex == 2:
-                polytope_flag = self.func_epa_init_polytope_2d(i_ga, i_gb, i_b)
-            elif nsimplex == 4:
-                polytope_flag = self.func_epa_init_polytope_4d(i_ga, i_gb, i_b)
-
-            print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "polytope_flag (4d):", polytope_flag)
-
-            # Polytope 3D could be used as a fallback for 2D and 4D cases, but it is not necessary
-            if (
-                nsimplex == 3
-                or (polytope_flag == RETURN_CODE.EPA_P2_FALLBACK3)
-                or (polytope_flag == RETURN_CODE.EPA_P4_FALLBACK3)
-            ):
-                polytope_flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
-                print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "polytope_flag (3d):", polytope_flag)
-
+            self.func_epa_init_polytope_4d(i_ga, i_gb, i_b)
+            
             # Run EPA from the polytope
-            if polytope_flag == RETURN_CODE.SUCCESS:
-                i_f = self.func_epa(i_ga, i_gb, i_b)
-                distance = self.distance[i_b]
+            i_f = self.func_epa(i_ga, i_gb, i_b)
+            distance = self.distance[i_b]
 
-                if ti.static(self.enable_mujoco_multi_contact):
-                    # To use MuJoCo's multi-contact detection algorithm,
-                    # (1) [i_f] should be a valid face index in the polytope (>= 0),
-                    # (2) Both of the geometries should be discrete,
-                    # (3) [multi_contact] should be True.
-                    if i_f >= 0 and self.func_is_discrete_geoms(i_ga, i_gb, i_b) and multi_contact:
-                        self.func_multi_contact(i_ga, i_gb, i_b, i_f)
-                        self.multi_contact_flag[i_b] = 1
+            # print("EPA finished, distance:", distance, "i_f:", i_f)
+
+            if ti.static(self.enable_mujoco_multi_contact):
+                # To use MuJoCo's multi-contact detection algorithm,
+                # (1) [i_f] should be a valid face index in the polytope (>= 0),
+                # (2) Both of the geometries should be discrete,
+                # (3) [multi_contact] should be True.
+                if i_f >= 0 and self.func_is_discrete_geoms(i_ga, i_gb, i_b) and multi_contact:
+                    self.func_multi_contact(i_ga, i_gb, i_b, i_f)
+                    self.multi_contact_flag[i_b] = 1
 
         # Compute the final contact points and normals.
         n_contacts = 0
@@ -339,6 +325,9 @@ class GJK:
         if n_contacts == 0:
             self.is_col[i_b] = 0
             self.penetration[i_b] = 0.0
+
+            if gjk_flag == RETURN_CODE.GJK_INTERSECT:
+                print(f"Warning {i_ga} {i_gb}: GJK returned INTERSECT, but no contacts found. This is likely a numerical issue.")
 
     @ti.func
     def func_gjk(self, i_ga, i_gb, i_b, shrink_sphere):
@@ -730,9 +719,7 @@ class GJK:
                         break
                 else:
                     # Check if the origin is strictly outside of the Minkowski difference (which means there is no collision)
-                    new_minkowski = self.simplex_vertex_intersect[i_b, min_si].mink
-
-                    is_no_collision = new_minkowski.dot(min_normal) < 0
+                    is_no_collision = minkowski.dot(min_normal) < 0
                     if is_no_collision:
                         flag = RETURN_CODE.GJK_SEPARATED
                         break
@@ -1241,6 +1228,13 @@ class GJK:
         for k in range(k_max):
             prev_nearest_i_f = nearest_i_f
 
+            print("EPA iteration:", k)
+            for i in range(self.polytope[i_b].nverts):
+                print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink)
+            for i in range(self.polytope[i_b].nfaces_map):
+                i_f = self.polytope_faces_map[i_b][i]
+                print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
+
             # Find the polytope face with the smallest distance to the origin
             lower2 = self.FLOAT_MAX_SQ
 
@@ -1255,26 +1249,26 @@ class GJK:
             if lower2 > upper2 or nearest_i_f < 0:
                 # Invalid face found, stop the algorithm (lower bound of depth is larger than upper bound)
                 nearest_i_f = prev_nearest_i_f
-                break
-
-            if lower2 <= self.FLOAT_MIN:
-                # Invalid lower bound (0), stop the algorithm (origin is on the affine hull of face)
+                print("No valid face found, stopping EPA.")
                 break
 
             # Find a new support point w from the nearest face's normal
             lower = ti.sqrt(lower2)
             dir = self.polytope_faces[i_b, nearest_i_f].normal
-            wi = self.func_epa_support(i_ga, i_gb, i_b, dir, lower)
+            wi = self.func_epa_support(i_ga, i_gb, i_b, dir, 1.0)
             w = self.polytope_verts[i_b, wi].mink
 
             # The upper bound of depth at k-th iteration
-            upper_k = w.dot(dir) / lower
+            upper_k = w.dot(dir)
             if upper_k < upper:
                 upper = upper_k
                 upper2 = upper**2
 
             # If the upper bound and lower bound are close enough, we can stop the algorithm
+            print("lower:", lower, "upper:", upper, "nearest face:", nearest_i_f)
+            print("dir:", dir, "w:", w)
             if (upper - lower) < tolerance:
+                print("EPA converged at iteration", k)
                 break
 
             if discrete:
@@ -1289,6 +1283,7 @@ class GJK:
                         repeated = True
                         break
                 if repeated:
+                    print("Vertex w is already in the polytope, skipping...")
                     break
 
             self.polytope[i_b].horizon_w = w
@@ -1299,11 +1294,13 @@ class GJK:
             if horizon_flag:
                 # There was an error in the horizon construction, so the horizon edge is not a closed loop.
                 nearest_i_f = -1
+                print("Horizon construction failed, stopping EPA.")
                 break
 
             if self.polytope[i_b].horizon_nedges < 3:
                 # Should not happen, because at least three edges should be in the horizon from one deleted face.
                 nearest_i_f = -1
+                print("Horizon has less than 3 edges, stopping EPA.")
                 break
 
             # Check if the memory space is enough for attaching new faces
@@ -1311,6 +1308,7 @@ class GJK:
             nedges = self.polytope[i_b].horizon_nedges
             if nfaces + nedges >= self.polytope_max_faces:
                 # If the polytope is full, we cannot insert new faces
+                print("Polytope is full, cannot insert new faces.")
                 break
 
             # Attach the new faces
@@ -1344,9 +1342,10 @@ class GJK:
                     adj_i_f_1,
                     adj_i_f_0,  # Next face id
                 )
-                if dist2 <= 0:
+                if dist2 < -1.0:
                     # Unrecoverable numerical issue
                     nearest_i_f = -1
+                    print("Unrecoverable numerical issue in EPA, stopping.")
                     break
 
                 if (dist2 >= lower2) and (dist2 <= upper2):
@@ -1361,6 +1360,7 @@ class GJK:
 
             if (self.polytope[i_b].nfaces_map == 0) or (nearest_i_f == -1):
                 # No face candidate left
+                print("No face candidate left, stopping EPA.")
                 break
 
         if nearest_i_f != -1:
@@ -1388,8 +1388,15 @@ class GJK:
         face_v3 = self.polytope_verts[i_b, face.verts_idx[2]].mink
         face_normal = face.normal
 
+        # Project origin onto the face plane to get the barycentric coordinates
+        proj_o, _ = self.func_project_origin_to_plane(
+            face_v1,
+            face_v2,
+            face_v3,
+        )
+
         _lambda = self.func_triangle_affine_coords(
-            face_normal,
+            proj_o,
             face_v1,
             face_v2,
             face_v3,
@@ -1759,8 +1766,7 @@ class GJK:
         int
             0 when successful, or a flag indicating an error.
         """
-        flag = RETURN_CODE.SUCCESS
-
+        
         # Insert simplex vertices into the polytope
         vi = ti.Vector([0, 0, 0, 0], dt=ti.i32)
         for i in range(4):
@@ -1789,36 +1795,13 @@ class GJK:
                 v1, v2, v3 = vi[3], vi[2], vi[1]
                 a1, a2, a3 = 2, 0, 1
 
-            dist2 = self.func_attach_face_to_polytope(i_b, v1, v2, v3, a1, a2, a3)
+            self.func_attach_face_to_polytope(i_b, v1, v2, v3, a1, a2, a3)
 
-            if dist2 < self.FLOAT_MIN_SQ:
-                print("EPA: Origin is on the face of the tetrahedron, replacing simplex with triangle.")
-                print("Dist2:", f"{dist2:.20g}")
-                self.func_replace_simplex_3(i_b, v1, v2, v3)
-                flag = RETURN_CODE.EPA_P4_FALLBACK3
-                break
-
-        if flag == RETURN_CODE.SUCCESS:
-            # If the tetrahedron does not contain the origin, we do not proceed anymore.
-            if (
-                self.func_origin_tetra_intersection(
-                    self.polytope_verts[i_b, vi[0]].mink,
-                    self.polytope_verts[i_b, vi[1]].mink,
-                    self.polytope_verts[i_b, vi[2]].mink,
-                    self.polytope_verts[i_b, vi[3]].mink,
-                )
-                == RETURN_CODE.FAIL
-            ):
-                flag = RETURN_CODE.EPA_P4_MISSING_ORIGIN
-
-        if flag == RETURN_CODE.SUCCESS:
-            # Initialize face map
-            for i in ti.static(range(4)):
-                self.polytope_faces_map[i_b][i] = i
-                self.polytope_faces[i_b, i].map_idx = i
-            self.polytope[i_b].nfaces_map = 4
-
-        return flag
+        # Initialize face map
+        for i in ti.static(range(4)):
+            self.polytope_faces_map[i_b][i] = i
+            self.polytope_faces[i_b, i].map_idx = i
+        self.polytope[i_b].nfaces_map = 4
 
     @ti.func
     def func_epa_support(self, i_ga, i_gb, i_b, dir, dir_norm):
@@ -1851,7 +1834,7 @@ class GJK:
         float
             Squared distance of the face to the origin.
         """
-        dist2 = 0.0
+        dist2 = -10.0
 
         n = self.polytope[i_b].nfaces
         self.polytope_faces[i_b, n].verts_idx[0] = i_v1
@@ -1862,19 +1845,72 @@ class GJK:
         self.polytope_faces[i_b, n].adj_idx[2] = i_a3
         self.polytope[i_b].nfaces += 1
 
-        # Compute the squared distance of the face to the origin
-        self.polytope_faces[i_b, n].normal, ret = self.func_project_origin_to_plane(
+        # Compute the normal of the plane
+        normal, ret = self.func_plane_normal(
             self.polytope_verts[i_b, i_v3].mink,
             self.polytope_verts[i_b, i_v2].mink,
             self.polytope_verts[i_b, i_v1].mink,
         )
         if ret == RETURN_CODE.SUCCESS:
-            normal = self.polytope_faces[i_b, n].normal
-            self.polytope_faces[i_b, n].dist2 = normal.dot(normal)
+            # # Reorient the normal, so that it points towards outside of the polytope
+            # nverts = self.polytope[i_b].nverts
+            # for i_v in range(nverts):
+            #     if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
+            #         diff = self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink
+            #         if diff.norm() > self.FLOAT_MIN:
+            #             if normal.dot(diff) > 0:
+            #                 # If the normal points towards the vertex, flip it
+            #                 normal = -normal
+            #             break
+
+            self.polytope_faces[i_b, n].normal = normal
+
+            # Compute the squared distance of the face to the origin
+            dist = normal.dot(self.polytope_verts[i_b, i_v1].mink)
+            dist2 = dist ** 2
+            self.polytope_faces[i_b, n].dist2 = dist2
             self.polytope_faces[i_b, n].map_idx = -1  # No map index yet
             dist2 = self.polytope_faces[i_b, n].dist2
 
         return dist2
+    
+    @ti.func
+    def func_plane_normal(self, v1, v2, v3):
+        """
+        Compute the reliable normal of the plane defined by three points.
+        """
+        normal, flag = gs.ti_vec3(0, 0, 0), RETURN_CODE.SUCCESS
+
+        d21 = v2 - v1
+        d31 = v3 - v1
+        d32 = v3 - v2
+
+        for i in range(3):
+            n = gs.ti_vec3(0, 0, 0)
+            if i == 0:
+                # Normal = (v1 - v2) x (v3 - v2)
+                n = d32.cross(d21)
+            elif i == 1:
+                # Normal = (v2 - v1) x (v3 - v1)
+                n = d21.cross(d31)
+            else:
+                # Normal = (v1 - v3) x (v2 - v3)
+                n = d31.cross(d32)
+            nn = n.norm()
+            if nn == 0:
+                # Zero normal, cannot project.
+                flag = RETURN_CODE.FAIL
+                break
+            elif nn > self.FLOAT_MIN:
+                normal = n.normalized()
+                flag = RETURN_CODE.SUCCESS
+                break
+            else:
+                if i == 2:
+                    # If we reach here, all normals were unreliable.
+                    flag = RETURN_CODE.FAIL
+
+        return normal, flag
 
     @ti.func
     def func_replace_simplex_3(self, i_b, i_v1, i_v2, i_v3):
