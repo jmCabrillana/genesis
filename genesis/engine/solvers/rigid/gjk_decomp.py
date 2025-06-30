@@ -256,42 +256,9 @@ class GJK:
         """
         self.clear_cache(i_b)
 
-        # If any one of the geometries is a sphere or capsule, which are sphere-swept primitives, we can shrink them
-        # to a point or line to detect shallow penetration faster.
-        is_sphere_swept_geom_a, is_sphere_swept_geom_b = (
-            self.func_is_sphere_swept_geom(i_ga, i_b),
-            self.func_is_sphere_swept_geom(i_gb, i_b),
-        )
-        shrink_sphere = is_sphere_swept_geom_a or is_sphere_swept_geom_b
+        gjk_flag = self.func_gjk_discrete(i_ga, i_gb, i_b)
 
-        # Run GJK.
-        for i_gjk in range(2 if shrink_sphere else 1):
-            distance = self.func_gjk(i_ga, i_gb, i_b, shrink_sphere)
-
-            if shrink_sphere:
-                # If we shrinked the sphere and capsule to point and line and the distance is larger than the collision
-                # epsilon, it means a shallow penetration. Thus we subtract the radius of the sphere and the capsule to
-                # get the actual distance. If the distance is smaller than the collision epsilon, it means a deep
-                # penetration, which requires the default GJK handling.
-                if distance > self.collision_eps:
-                    radius_a, radius_b = 0.0, 0.0
-                    if is_sphere_swept_geom_a:
-                        radius_a = self._solver.geoms_info[i_ga].data[0]
-                    if is_sphere_swept_geom_b:
-                        radius_b = self._solver.geoms_info[i_gb].data[0]
-
-                    wa = self.witness[i_b, 0].point_obj1
-                    wb = self.witness[i_b, 0].point_obj2
-                    n = self.func_safe_normalize(wb - wa)
-
-                    self.distance[i_b] = distance - (radius_a + radius_b)
-                    self.witness[i_b, 0].point_obj1 = wa + (radius_a * n)
-                    self.witness[i_b, 0].point_obj2 = wb - (radius_b * n)
-
-                    break
-
-            # Only try shrinking the sphere once
-            shrink_sphere = False
+        print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "intersect:", gjk_flag == RETURN_CODE.GJK_INTERSECT)
 
         distance = self.distance[i_b]
         nsimplex = self.nsimplex[i_b]
@@ -301,7 +268,7 @@ class GJK:
         # 1. We did not find min. distance with shrink_sphere flag
         # 2. We have a valid GJK simplex (nsimplex > 0)
         # 3. We have a collision (distance < collision_epsilon)
-        do_epa = (not shrink_sphere) and collided and (nsimplex > 0)
+        do_epa = collided and (nsimplex > 0)
 
         if do_epa:
             # Assume touching
@@ -320,6 +287,8 @@ class GJK:
             elif nsimplex == 4:
                 polytope_flag = self.func_epa_init_polytope_4d(i_ga, i_gb, i_b)
 
+            print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "polytope_flag (4d):", polytope_flag)
+
             # Polytope 3D could be used as a fallback for 2D and 4D cases, but it is not necessary
             if (
                 nsimplex == 3
@@ -327,6 +296,7 @@ class GJK:
                 or (polytope_flag == RETURN_CODE.EPA_P4_FALLBACK3)
             ):
                 polytope_flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+                print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "polytope_flag (3d):", polytope_flag)
 
             # Run EPA from the polytope
             if polytope_flag == RETURN_CODE.SUCCESS:
@@ -645,6 +615,343 @@ class GJK:
             si[n] = swap
 
         return flag
+
+    @ti.func
+    def func_gjk_discrete(self, i_ga, i_gb, i_b):
+        """
+        GJK algorithm to check collision between two convex discrete geometries.
+        """
+        dir0 = gs.ti_vec3(0, 0, 1)
+        dir1 = gs.ti_vec3(0, 1, 0)
+
+        # Compute the initial tetrahedron using two random directions
+        flag = RETURN_CODE.SUCCESS
+        self.simplex[i_b].nverts = 0
+        for i in range(4):
+            dir = gs.ti_vec3(0.0, 0.0, 0.0)
+            if i // 2 == 0:
+                dir = dir0 if i % 2 == 0 else -dir0
+            else:
+                dir = dir1 if i % 2 == 0 else -dir1
+
+            obj1, obj2, id1, id2, minkowski = self.func_support(i_ga, i_gb, i_b, dir, False)
+            
+            # Check if the new vertex would make a valid simplex.
+            valid = self.func_is_new_discrete_simplex_vertex_valid(i_b, id1, id2, minkowski)
+            
+            # If this is not a valid vertex, fall back to a brute-force routine to find a valid vertex.
+            if not valid:
+                obj1, obj2, id1, id2, minkowski, flag = \
+                    self.func_search_valid_discrete_simplex_vertex(i_ga, i_gb, i_b)
+                
+                # If the brute-force search failed, we cannot proceed with GJK.
+                if flag == RETURN_CODE.FAIL:
+                    break
+
+            self.simplex_vertex_intersect[i_b, i].obj1 = obj1
+            self.simplex_vertex_intersect[i_b, i].obj2 = obj2
+            self.simplex_vertex_intersect[i_b, i].id1 = id1
+            self.simplex_vertex_intersect[i_b, i].id2 = id2
+            self.simplex_vertex_intersect[i_b, i].mink = minkowski
+            self.simplex[i_b].nverts += 1
+        
+        if flag == RETURN_CODE.SUCCESS:
+            # Simplex index
+            si = ti.Vector([0, 1, 2, 3], dt=gs.ti_int)
+
+            for i in range(self.gjk_max_iterations):
+                # print("GJK Iteration:", i)
+                # print("Vertex 1:", self.simplex_vertex_intersect[i_b, 0].mink)
+                # print("Vertex 2:", self.simplex_vertex_intersect[i_b, 1].mink)
+                # print("Vertex 3:", self.simplex_vertex_intersect[i_b, 2].mink)
+                # print("Vertex 4:", self.simplex_vertex_intersect[i_b, 3].mink)
+
+                # Compute normal and signed distance of the triangle faces of the simplex with respect to the origin.
+                # These normals are supposed to point outwards from the simplex.
+                # If the origin is inside the plane, [sdist] will be positive.
+                for j in range(4):
+                    s0, s1, s2, ap = si[2], si[1], si[3], si[0]
+                    if j == 1:
+                        s0, s1, s2, ap = si[0], si[2], si[3], si[1]
+                    elif j == 2:
+                        s0, s1, s2, ap = si[1], si[0], si[3], si[2]
+                    elif j == 3:
+                        s0, s1, s2, ap = si[0], si[1], si[2], si[3]
+
+                    n, s = self.func_discrete_gjk_triangle_info(i_b, s0, s1, s2, ap)
+
+                    self.simplex_buffer_intersect[i_b, j].normal = n
+                    self.simplex_buffer_intersect[i_b, j].sdist = s
+
+                # Find the face with the smallest signed distance. We need to find [min_i] for the next iteration.
+                min_i = 0
+                for j in ti.static(range(1, 4)):
+                    if self.simplex_buffer_intersect[i_b, j].sdist < self.simplex_buffer_intersect[i_b, min_i].sdist:
+                        min_i = j
+
+                min_si = si[min_i]
+                min_normal = self.simplex_buffer_intersect[i_b, min_i].normal
+                min_sdist = self.simplex_buffer_intersect[i_b, min_i].sdist
+
+                # print("Min index:", min_si)
+                # print("Min signed distance:", min_sdist)
+                # print("Min normal:", min_normal)
+
+                # If origin is inside the simplex, the signed distances will all be positive
+                if min_sdist >= 0:
+                    # Origin is inside the simplex, so we can stop
+                    flag = RETURN_CODE.GJK_INTERSECT
+
+                    # Copy the temporary simplex to the main simplex
+                    for j in ti.static(range(4)):
+                        self.simplex_vertex[i_b, j] = self.simplex_vertex_intersect[i_b, si[j]]
+                    break
+
+                # Find a new candidate vertex to replace the worst vertex (which has the smallest signed distance)
+                obj1, obj2, id1, id2, minkowski = self.func_support(i_ga, i_gb, i_b, min_normal, False)
+
+                # Check if the new vertex would make a valid simplex.
+                self.simplex[i_b].nverts = 3
+                if min_si != 3:
+                    self.simplex_vertex_intersect[i_b, min_si].obj1 = self.simplex_vertex_intersect[i_b, 3].obj1
+                    self.simplex_vertex_intersect[i_b, min_si].obj2 = self.simplex_vertex_intersect[i_b, 3].obj2
+                    self.simplex_vertex_intersect[i_b, min_si].id1 = self.simplex_vertex_intersect[i_b, 3].id1
+                    self.simplex_vertex_intersect[i_b, min_si].id2 = self.simplex_vertex_intersect[i_b, 3].id2
+                    self.simplex_vertex_intersect[i_b, min_si].mink = self.simplex_vertex_intersect[i_b, 3].mink
+
+                valid = self.func_is_new_discrete_simplex_vertex_valid(i_b, id1, id2, minkowski)
+
+                # If this is not a valid vertex, fall back to a brute-force routine to find a valid vertex.
+                if not valid:
+                    obj1, obj2, id1, id2, minkowski, search_flag = \
+                        self.func_search_valid_discrete_simplex_vertex(i_ga, i_gb, i_b)
+                    if search_flag == RETURN_CODE.FAIL:
+                        flag = RETURN_CODE.FAIL
+                        break
+                else:
+                    # Check if the origin is strictly outside of the Minkowski difference (which means there is no collision)
+                    new_minkowski = self.simplex_vertex_intersect[i_b, min_si].mink
+
+                    is_no_collision = new_minkowski.dot(min_normal) < 0
+                    if is_no_collision:
+                        flag = RETURN_CODE.GJK_SEPARATED
+                        break
+
+                self.simplex_vertex_intersect[i_b, 3].obj1 = obj1
+                self.simplex_vertex_intersect[i_b, 3].obj2 = obj2
+                self.simplex_vertex_intersect[i_b, 3].id1 = id1
+                self.simplex_vertex_intersect[i_b, 3].id2 = id2
+                self.simplex_vertex_intersect[i_b, 3].mink = minkowski
+                self.simplex[i_b].nverts = 4
+
+        if flag == RETURN_CODE.GJK_INTERSECT:
+            self.distance[i_b] = 0.0
+            self.nsimplex[i_b] = 4
+        else:
+            flag = RETURN_CODE.GJK_SEPARATED
+            self.distance[i_b] = self.FLOAT_MAX
+            self.nsimplex[i_b] = 0
+
+        return flag
+    
+    @ti.func
+    def func_is_new_discrete_simplex_vertex_valid(self, i_b, id1, id2, mink):
+        """
+        Check validity of the incoming simplex vertex, which comes from two discrete geometries.
+
+        To be a new valid simplex vertex, it should satisfy the following conditions:
+        1) The vertex should not be already in the simplex.
+        2) The simplex should not be degenerate after insertion.
+        """
+        valid = True
+        is_duplicate = self.func_is_new_discrete_simplex_vertex_duplicate(i_b, id1, id2)
+        if is_duplicate:
+            valid = False
+        else:
+            is_degenerate = self.func_is_new_simplex_degenerate(i_b, mink)
+            if is_degenerate:
+                valid = False
+        return valid
+
+    @ti.func
+    def func_is_new_discrete_simplex_vertex_duplicate(self, i_b, id1, id2):
+        """
+        Check if the simplex vertex with given ids is already in the simplex.
+        """
+        nverts = self.simplex[i_b].nverts
+        found = False
+        for i in range(nverts):
+            if (self.simplex_vertex_intersect[i_b, i].id1 == id1) and (self.simplex_vertex_intersect[i_b, i].id2 == id2):
+                found = True
+                break
+        return found
+    
+    @ti.func
+    def func_is_new_simplex_degenerate(self, i_b, mink):
+        """
+        Check if the simplex becomes degenerate after inserting a new vertex, assuming that the current simplex is okay.
+        """
+        is_degenerate = False
+
+        # Check if the new vertex is not very close to the existing vertices
+        nverts = self.simplex[i_b].nverts
+        for i in range(nverts):
+            vert = self.simplex_vertex_intersect[i_b, i].mink
+            dist = (vert - mink).norm()
+            if dist < self.FLOAT_MIN:
+                is_degenerate = True
+                break
+
+        if not is_degenerate:
+            # Check the validity based on the simplex dimension
+            if nverts == 2:
+                # Becomes a triangle if valid, check if the three vertices are not collinear
+                is_degenerate = self.func_is_colinear(
+                    self.simplex_vertex_intersect[i_b, 0].mink,
+                    self.simplex_vertex_intersect[i_b, 1].mink,
+                    mink
+                )
+            elif nverts == 3:
+                # Becomes a tetrahedron if valid, check if the four vertices are not coplanar
+                is_degenerate = self.func_is_coplanar(
+                    self.simplex_vertex_intersect[i_b, 0].mink,
+                    self.simplex_vertex_intersect[i_b, 1].mink,
+                    self.simplex_vertex_intersect[i_b, 2].mink,
+                    mink
+                )
+        
+        return is_degenerate
+
+    @ti.func
+    def func_is_colinear(self, v1, v2, v3):
+        """
+        Check if three points are collinear.
+        """
+        return (v2 - v1).cross(v3 - v1).norm() < self.FLOAT_MIN
+    
+    @ti.func
+    def func_is_coplanar(self, v1, v2, v3, v4):
+        """        
+        Check if four points are coplanar.
+        """
+        return (v2 - v1).cross(v3 - v1).dot(v4 - v1) < self.FLOAT_MIN
+
+    @ti.func
+    def func_search_valid_discrete_simplex_vertex(self, i_ga, i_gb, i_b):
+        """
+        Search for a valid simplex vertex in the Minkowski difference.
+        """
+        geom_nverts = gs.ti_ivec2(0, 0)
+        for i in range(2):
+            geom_nverts[i] = self.func_num_discrete_geom_vertices(i_ga if i == 0 else i_gb, i_b)
+
+        obj1 = gs.ti_vec3(0.0, 0.0, 0.0)
+        obj2 = gs.ti_vec3(0.0, 0.0, 0.0)
+        id1 = -1
+        id2 = -1
+        minkowski = gs.ti_vec3(0.0, 0.0, 0.0)
+        flag = RETURN_CODE.FAIL
+
+        for i in range(geom_nverts[0]):
+            for j in range(geom_nverts[1]):
+                id1 = self._solver.geoms_info.vert_start[i_ga] + i
+                id2 = self._solver.geoms_info.vert_start[i_gb] + j
+
+                # Check if the vertex is already in the simplex
+                duplicate = self.func_is_new_discrete_simplex_vertex_duplicate(i_b, id1, id2)
+                if duplicate:
+                    continue
+
+                for k in range(2):
+                    obj = self.func_get_discrete_geom_vertex(
+                        i_ga if k == 0 else i_gb, i_b, i if k == 0 else j
+                    )
+                    if k == 0:
+                        obj1 = obj
+                    else:
+                        obj2 = obj
+                minkowski = obj1 - obj2
+
+                # Check if the Minkowski vertex is valid
+                degenerate = self.func_is_new_simplex_degenerate(i_b, minkowski)
+                if not degenerate:
+                    # Found a valid simplex vertex
+                    flag = RETURN_CODE.SUCCESS
+                    break
+
+        return obj1, obj2, id1, id2, minkowski, flag
+
+    @ti.func
+    def func_num_discrete_geom_vertices(self, i_g, i_b):
+        """
+        Count the number of discrete vertices in the geometry.
+        """
+        geom_type = self._solver.geoms_info[i_g].type
+        count = 0
+        if geom_type == gs.GEOM_TYPE.BOX:
+            count = 8
+        elif geom_type == gs.GEOM_TYPE.MESH:
+            vert_start = self._solver.geoms_info.vert_start[i_g]
+            vert_end = self._solver.geoms_info.vert_end[i_g]
+            count = vert_end - vert_start
+        return count
+    
+    @ti.func
+    def func_get_discrete_geom_vertex(self, i_g, i_b, i_v):
+        """
+        Get the discrete vertex of the geometry.
+        """
+        geom_type = self._solver.geoms_info[i_g].type
+        geom_state = self._solver.geoms_state[i_g, i_b]
+
+        # Get the vertex position in the local frame of the geometry.
+        v = ti.Vector([0.0, 0.0, 0.0], dt=gs.ti_float)
+        if geom_type == gs.GEOM_TYPE.BOX:
+            x_positive = (i_v & 1 == 1)
+            y_positive = (i_v & 2 == 2)
+            z_positive = (i_v & 4 == 4)
+            v = ti.Vector(
+                [
+                    (1.0 if x_positive else -1.0) * self._solver.geoms_info[i_g].data[0] * 0.5,
+                    (1.0 if y_positive else -1.0) * self._solver.geoms_info[i_g].data[1] * 0.5,
+                    (1.0 if z_positive else -1.0) * self._solver.geoms_info[i_g].data[2] * 0.5,
+                ],
+                dt=gs.ti_float,
+            )
+        elif geom_type == gs.GEOM_TYPE.MESH:
+            vert_start = self._solver.geoms_info.vert_start[i_g]
+            v = self._solver.verts_info[vert_start + i_v].init_pos
+            
+        # Transform the vertex position to the world frame
+        v = gu.ti_transform_by_trans_quat(v, geom_state.pos, geom_state.quat)
+
+        return v
+
+    @ti.func
+    def func_discrete_gjk_triangle_info(self, i_b, i_ta, i_tb, i_tc, i_apex):
+        """
+        Compute normal and signed distance of the triangle face on the simplex from the origin.
+
+        The triangle is defined by the vertices [i_ta], [i_tb], and [i_tc], and the apex is used to orient the triangle
+        normal, so that it points outward from the simplex. Thus, if the origin is inside the simplex in terms of this
+        triangle, the signed distance will be positive.
+        """
+        vertex_1 = self.simplex_vertex_intersect[i_b, i_ta].mink
+        vertex_2 = self.simplex_vertex_intersect[i_b, i_tb].mink
+        vertex_3 = self.simplex_vertex_intersect[i_b, i_tc].mink
+        apex_vertex = self.simplex_vertex_intersect[i_b, i_apex].mink
+
+        # This normal is guaranteed to be non-zero because we build the simplex avoiding degenerate vertices.
+        normal = (vertex_3 - vertex_1).cross(vertex_2 - vertex_1).normalized()
+
+        # Reorient the normal to point outward from the simplex
+        if normal.dot(apex_vertex - vertex_1) > 0:
+            normal = -normal
+
+        # Compute the signed distance from the origin to the triangle plane
+        sdist = normal.dot(vertex_1)
+
+        return normal, sdist
 
     @ti.func
     def func_gjk_triangle_info(self, i_b, i_va, i_vb, i_vc):
@@ -1485,6 +1792,8 @@ class GJK:
             dist2 = self.func_attach_face_to_polytope(i_b, v1, v2, v3, a1, a2, a3)
 
             if dist2 < self.FLOAT_MIN_SQ:
+                print("EPA: Origin is on the face of the tetrahedron, replacing simplex with triangle.")
+                print("Dist2:", f"{dist2:.20g}")
                 self.func_replace_simplex_3(i_b, v1, v2, v3)
                 flag = RETURN_CODE.EPA_P4_FALLBACK3
                 break
@@ -2914,9 +3223,146 @@ class GJK:
         elif geom_type == gs.GEOM_TYPE.TERRAIN:
             if ti.static(self._solver.collider._has_terrain):
                 v, vid = self.support_field._func_support_prism(direction, i_g, i_b)
-        elif geom_type == gs.GEOM_TYPE.MESH and self._solver._enable_mujoco_compatibility:
+        elif geom_type == gs.GEOM_TYPE.MESH: # and self._solver._enable_mujoco_compatibility:
             # If mujoco-compatible, do exhaustive search for the vertex
             v, vid = self.support_mesh(direction, i_g, i_b, i_o)
         else:
             v, vid = self.support_field._func_support_world(direction, i_g, i_b)
         return v, vid
+
+
+
+    # @ti.func
+    # def func_gjk_contact(self, i_ga, i_gb, i_b, multi_contact):
+    #     """
+    #     Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms.
+
+    #     We first run the GJK algorithm to find the minimum distance between the two geometries. If the distance is
+    #     smaller than the collision epsilon, we consider the geometries colliding. If they are colliding, we run the EPA
+    #     algorithm to find the exact contact points and normals. Afterwards, if we want to detect multiple contacts using
+    #     the MuJoCo's multi-contact detection algorithm, we run the algorithm to find multiple contact points.
+
+    #     Parameters
+    #     ----------
+    #     multi_contact: bool
+    #         Whether to use MuJoCo's multi-contact detection algorithm.
+
+    #     .. seealso::
+    #     MuJoCo's original implementation:
+    #     https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
+    #     """
+    #     self.clear_cache(i_b)
+
+    #     # If any one of the geometries is a sphere or capsule, which are sphere-swept primitives, we can shrink them
+    #     # to a point or line to detect shallow penetration faster.
+    #     is_sphere_swept_geom_a, is_sphere_swept_geom_b = (
+    #         self.func_is_sphere_swept_geom(i_ga, i_b),
+    #         self.func_is_sphere_swept_geom(i_gb, i_b),
+    #     )
+    #     shrink_sphere = is_sphere_swept_geom_a or is_sphere_swept_geom_b
+
+    #     # Run GJK.
+    #     for i_gjk in range(2 if shrink_sphere else 1):
+    #         distance = self.func_gjk(i_ga, i_gb, i_b, shrink_sphere)
+
+    #         if shrink_sphere:
+    #             # If we shrinked the sphere and capsule to point and line and the distance is larger than the collision
+    #             # epsilon, it means a shallow penetration. Thus we subtract the radius of the sphere and the capsule to
+    #             # get the actual distance. If the distance is smaller than the collision epsilon, it means a deep
+    #             # penetration, which requires the default GJK handling.
+    #             if distance > self.collision_eps:
+    #                 radius_a, radius_b = 0.0, 0.0
+    #                 if is_sphere_swept_geom_a:
+    #                     radius_a = self._solver.geoms_info[i_ga].data[0]
+    #                 if is_sphere_swept_geom_b:
+    #                     radius_b = self._solver.geoms_info[i_gb].data[0]
+
+    #                 wa = self.witness[i_b, 0].point_obj1
+    #                 wb = self.witness[i_b, 0].point_obj2
+    #                 n = self.func_safe_normalize(wb - wa)
+
+    #                 self.distance[i_b] = distance - (radius_a + radius_b)
+    #                 self.witness[i_b, 0].point_obj1 = wa + (radius_a * n)
+    #                 self.witness[i_b, 0].point_obj2 = wb - (radius_b * n)
+
+    #                 break
+
+    #         # Only try shrinking the sphere once
+    #         shrink_sphere = False
+
+    #     distance = self.distance[i_b]
+    #     nsimplex = self.nsimplex[i_b]
+    #     collided = distance < self.collision_eps
+
+    #     # To run EPA, we need following conditions:
+    #     # 1. We did not find min. distance with shrink_sphere flag
+    #     # 2. We have a valid GJK simplex (nsimplex > 0)
+    #     # 3. We have a collision (distance < collision_epsilon)
+    #     do_epa = (not shrink_sphere) and collided and (nsimplex > 0)
+
+    #     if do_epa:
+    #         # Assume touching
+    #         self.distance[i_b] = 0
+
+    #         # Initialize polytope
+    #         self.polytope[i_b].nverts = 0
+    #         self.polytope[i_b].nfaces = 0
+    #         self.polytope[i_b].nfaces_map = 0
+    #         self.polytope[i_b].horizon_nedges = 0
+
+    #         # Construct the initial polytope from the GJK simplex
+    #         polytope_flag = RETURN_CODE.SUCCESS
+    #         if nsimplex == 2:
+    #             polytope_flag = self.func_epa_init_polytope_2d(i_ga, i_gb, i_b)
+    #         elif nsimplex == 4:
+    #             polytope_flag = self.func_epa_init_polytope_4d(i_ga, i_gb, i_b)
+
+    #         # Polytope 3D could be used as a fallback for 2D and 4D cases, but it is not necessary
+    #         if (
+    #             nsimplex == 3
+    #             or (polytope_flag == RETURN_CODE.EPA_P2_FALLBACK3)
+    #             or (polytope_flag == RETURN_CODE.EPA_P4_FALLBACK3)
+    #         ):
+    #             polytope_flag = self.func_epa_init_polytope_3d(i_ga, i_gb, i_b)
+
+    #         # Run EPA from the polytope
+    #         if polytope_flag == RETURN_CODE.SUCCESS:
+    #             i_f = self.func_epa(i_ga, i_gb, i_b)
+    #             distance = self.distance[i_b]
+
+    #             if ti.static(self.enable_mujoco_multi_contact):
+    #                 # To use MuJoCo's multi-contact detection algorithm,
+    #                 # (1) [i_f] should be a valid face index in the polytope (>= 0),
+    #                 # (2) Both of the geometries should be discrete,
+    #                 # (3) [multi_contact] should be True.
+    #                 if i_f >= 0 and self.func_is_discrete_geoms(i_ga, i_gb, i_b) and multi_contact:
+    #                     self.func_multi_contact(i_ga, i_gb, i_b, i_f)
+    #                     self.multi_contact_flag[i_b] = 1
+
+    #     # Compute the final contact points and normals.
+    #     n_contacts = 0
+    #     self.is_col[i_b] = self.distance[i_b] < 0.0
+    #     self.penetration[i_b] = -self.distance[i_b] if self.is_col[i_b] else 0.0
+
+    #     if self.is_col[i_b]:
+    #         for i in range(self.n_witness[i_b]):
+    #             w1 = self.witness[i_b, i].point_obj1
+    #             w2 = self.witness[i_b, i].point_obj2
+    #             contact_pos = 0.5 * (w1 + w2)
+
+    #             normal = w2 - w1
+    #             normal_len = normal.norm()
+    #             if normal_len < gs.EPS:
+    #                 continue
+
+    #             normal = normal / normal_len
+
+    #             self.contact_pos[i_b, n_contacts] = contact_pos
+    #             self.normal[i_b, n_contacts] = normal
+    #             n_contacts += 1
+
+    #     self.n_contacts[i_b] = n_contacts
+    #     # If there are no contacts, we set the penetration and is_col to 0.
+    #     if n_contacts == 0:
+    #         self.is_col[i_b] = 0
+    #         self.penetration[i_b] = 0.0

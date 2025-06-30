@@ -1396,7 +1396,7 @@ class Collider:
                         self.contact_cache[i_ga, i_gb, i_b].normal.fill(0.0)
 
                 elif multi_contact and is_col_0 > 0 and is_col > 0:
-                    if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.MPR_SDF):
+                    if True: # ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.MPR_SDF):
                         # 1. Project the contact point on both geometries
                         # 2. Revert the effect of small rotation
                         # 3. Update contact point
