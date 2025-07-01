@@ -1408,9 +1408,14 @@ class GJK:
         if nearest_i_f != -1:
             # Nearest face found
             dist2 = self.polytope_faces[i_b, nearest_i_f].dist2
-            self.func_epa_witness(i_ga, i_gb, i_b, nearest_i_f)
-            self.n_witness[i_b] = 1
-            self.distance[i_b] = -ti.sqrt(dist2)
+            flag = self.func_epa_witness(i_ga, i_gb, i_b, nearest_i_f)
+            if flag == RETURN_CODE.SUCCESS:
+                self.n_witness[i_b] = 1
+                self.distance[i_b] = -ti.sqrt(dist2)
+            else:
+                # Failed to compute witness points, so the objects are not colliding
+                self.n_witness[i_b] = 0
+                self.distance[i_b] = 0
         else:
             # No face found, so the objects are not colliding
             self.n_witness[i_b] = 0
@@ -1433,12 +1438,19 @@ class GJK:
         face_normal = face.normal
 
         # Project origin onto the face plane to get the barycentric coordinates
-        proj_o, proj_o_flag = self.func_project_origin_to_plane(
+        proj_o, _ = self.func_project_origin_to_plane(
             face_v1,
             face_v2,
             face_v3,
         )
 
+        # Check if the projection was stable
+        # face_vector = (face_v2 - face_v1).normalized()
+        # proj_vector = (-proj_o).normalized()
+        # proj_stability = face_vector.dot(proj_vector)
+        # if ti.abs(proj_stability) > self.FLOAT_MIN:
+        #     print("Projection is unstable.")
+            
         _lambda = self.func_triangle_affine_coords(
             proj_o,
             face_v1,
@@ -1446,20 +1458,33 @@ class GJK:
             face_v3,
         )
 
-        # Point on geom 1
-        v1 = self.polytope_verts[i_b, face.verts_idx[0]].obj1
-        v2 = self.polytope_verts[i_b, face.verts_idx[1]].obj1
-        v3 = self.polytope_verts[i_b, face.verts_idx[2]].obj1
-        witness1 = v1 * _lambda[0] + v2 * _lambda[1] + v3 * _lambda[2]
+        # Check validity of affine coordinates
+        v1 = self.polytope_verts[i_b, face.verts_idx[0]].mink
+        v2 = self.polytope_verts[i_b, face.verts_idx[1]].mink
+        v3 = self.polytope_verts[i_b, face.verts_idx[2]].mink
 
-        # Point on geom 2
-        v1 = self.polytope_verts[i_b, face.verts_idx[0]].obj2
-        v2 = self.polytope_verts[i_b, face.verts_idx[1]].obj2
-        v3 = self.polytope_verts[i_b, face.verts_idx[2]].obj2
-        witness2 = v1 * _lambda[0] + v2 * _lambda[1] + v3 * _lambda[2]
+        proj_o_lambda = v1 * _lambda[0] + v2 * _lambda[1] + v3 * _lambda[2]
+        affine_error = (proj_o - proj_o_lambda).norm()
+        if affine_error > gs.EPS:
+            flag = RETURN_CODE.FAIL
+        
+        if flag == RETURN_CODE.SUCCESS:
+            # Point on geom 1
+            v1 = self.polytope_verts[i_b, face.verts_idx[0]].obj1
+            v2 = self.polytope_verts[i_b, face.verts_idx[1]].obj1
+            v3 = self.polytope_verts[i_b, face.verts_idx[2]].obj1
+            witness1 = v1 * _lambda[0] + v2 * _lambda[1] + v3 * _lambda[2]
 
-        self.witness[i_b, 0].point_obj1 = witness1
-        self.witness[i_b, 0].point_obj2 = witness2
+            # Point on geom 2
+            v1 = self.polytope_verts[i_b, face.verts_idx[0]].obj2
+            v2 = self.polytope_verts[i_b, face.verts_idx[1]].obj2
+            v3 = self.polytope_verts[i_b, face.verts_idx[2]].obj2
+            witness2 = v1 * _lambda[0] + v2 * _lambda[1] + v3 * _lambda[2]
+
+            self.witness[i_b, 0].point_obj1 = witness1
+            self.witness[i_b, 0].point_obj2 = witness2
+
+        return flag
 
     @ti.func
     def func_epa_horizon(self, i_b, nearest_i_f):

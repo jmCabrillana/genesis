@@ -242,7 +242,6 @@ class Collider:
         ##---------------- box box
 
         self.reset()
-        self.counter = 0
 
     def reset(self, envs_idx: npt.NDArray[np.int32] | None = None) -> None:
         if envs_idx is None:
@@ -314,10 +313,7 @@ class Collider:
         # timer.stamp("func_update_aabbs")
         self._func_broad_phase()
         # timer.stamp("func_broad_phase")
-        self._func_narrow_phase_convex_vs_convex(self.ccd_algorithm)
-        # self.counter += 1
-        # if self.counter > 3:
-        #     self.ccd_algorithm = CCD_ALGORITHM_CODE.MPR_SDF
+        self._func_narrow_phase_convex_vs_convex()
         self._func_narrow_phase_convex_specializations()
         # timer.stamp("func_narrow_phase")
         if self._has_terrain:
@@ -875,7 +871,7 @@ class Collider:
                                         break
 
     @ti.kernel
-    def _func_narrow_phase_convex_vs_convex(self, algorithm: ti.int32):
+    def _func_narrow_phase_convex_vs_convex(self):
         """
         NOTE: for a single non-batched scene with a lot of collisioin pairs, it will be faster if we also parallelize over `self.n_collision_pairs`.
         However, parallelize over both B and collision_pairs (instead of only over B) leads to significantly slow performance for batched scene.
@@ -905,7 +901,7 @@ class Collider:
                         and self._solver.geoms_info[i_gb].type == gs.GEOM_TYPE.BOX
                     )
                 ):
-                    self._func_convex_convex_contact(i_ga, i_gb, i_b, algorithm)
+                    self._func_convex_convex_contact(i_ga, i_gb, i_b)
 
     @ti.kernel
     def _func_narrow_phase_convex_specializations(self):
@@ -1197,7 +1193,7 @@ class Collider:
         return axis_0, axis_1
 
     @ti.func
-    def _func_convex_convex_contact(self, i_ga, i_gb, i_b, algorithm):
+    def _func_convex_convex_contact(self, i_ga, i_gb, i_b):
         if self._solver.geoms_info[i_ga].type > self._solver.geoms_info[i_gb].type:
             i_ga, i_gb = i_gb, i_ga
 
@@ -1267,7 +1263,7 @@ class Collider:
                         is_col = penetration > 0
                     else:
                         ### MPR, MPR + SDF
-                        if algorithm != CCD_ALGORITHM_CODE.GJK:
+                        if ti.static(self.ccd_algorithm != CCD_ALGORITHM_CODE.GJK):
                             print("Running MPR or MPR + SDF for convex vs convex contact detection")
                             # Try using MPR before anything else
                             is_mpr_updated = False
@@ -1304,7 +1300,7 @@ class Collider:
                                 try_sdf = True
 
                         ### GJK
-                        elif algorithm == CCD_ALGORITHM_CODE.GJK:
+                        elif ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
                             print("")
                             print("Running GJK for convex vs convex contact detection")
                             # If it was not the first detection, only detect single contact point.
@@ -1330,7 +1326,7 @@ class Collider:
                                     contact_pos = self._gjk.contact_pos[i_b, 0]
                                     normal = self._gjk.normal[i_b, 0]
 
-                    if algorithm == CCD_ALGORITHM_CODE.MPR_SDF:
+                    if ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.MPR_SDF):
                         if try_sdf:
                             is_col_a = False
                             is_col_b = False
