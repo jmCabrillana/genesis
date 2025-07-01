@@ -1106,7 +1106,7 @@ class Collider:
 
     @ti.func
     def _func_add_contact(self, i_ga, i_gb, normal, contact_pos, penetration, i_b):
-        print("Adding contact, normal:", normal, "contact_pos:", contact_pos, "penetration:", penetration)
+        print(f"Adding contact {i_ga} {i_gb}, normal:", normal, "contact_pos:", contact_pos, "penetration:", penetration)
         i_col = self.n_contacts[i_b]
 
         if i_col == self._max_contact_pairs:
@@ -1264,7 +1264,6 @@ class Collider:
                     else:
                         ### MPR, MPR + SDF
                         if ti.static(self.ccd_algorithm != CCD_ALGORITHM_CODE.GJK):
-                            print("Running MPR or MPR + SDF for convex vs convex contact detection")
                             # Try using MPR before anything else
                             is_mpr_updated = False
                             is_mpr_guess_direction_available = True
@@ -1301,8 +1300,6 @@ class Collider:
 
                         ### GJK
                         elif ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
-                            print("")
-                            print("Running GJK for convex vs convex contact detection")
                             # If it was not the first detection, only detect single contact point.
                             self._gjk.func_gjk_contact(i_ga, i_gb, i_b, i_detection == 0)
 

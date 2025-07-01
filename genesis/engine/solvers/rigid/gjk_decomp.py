@@ -267,12 +267,12 @@ class GJK:
         MuJoCo's original implementation:
         https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
         """
+        #print("Running GJK contact detection for pair:", i_ga, i_gb)
         self.clear_cache(i_b)
 
         gjk_flag = self.func_gjk_discrete(i_ga, i_gb, i_b)
-
-        print("i_ga:", i_ga, "i_gb:", i_gb, "i_b:", i_b, "intersect:", gjk_flag == RETURN_CODE.GJK_INTERSECT)
-
+        #print("GJK finished, return code:", gjk_flag)
+        
         distance = self.distance[i_b]
         nsimplex = self.nsimplex[i_b]
         collided = distance < self.collision_eps
@@ -302,14 +302,14 @@ class GJK:
 
             # print("EPA finished, distance:", distance, "i_f:", i_f)
 
-            if ti.static(self.enable_mujoco_multi_contact):
-                # To use MuJoCo's multi-contact detection algorithm,
-                # (1) [i_f] should be a valid face index in the polytope (>= 0),
-                # (2) Both of the geometries should be discrete,
-                # (3) [multi_contact] should be True.
-                if i_f >= 0 and self.func_is_discrete_geoms(i_ga, i_gb, i_b) and multi_contact:
-                    self.func_multi_contact(i_ga, i_gb, i_b, i_f)
-                    self.multi_contact_flag[i_b] = 1
+            # if ti.static(self.enable_mujoco_multi_contact):
+            #     # To use MuJoCo's multi-contact detection algorithm,
+            #     # (1) [i_f] should be a valid face index in the polytope (>= 0),
+            #     # (2) Both of the geometries should be discrete,
+            #     # (3) [multi_contact] should be True.
+            #     if i_f >= 0 and self.func_is_discrete_geoms(i_ga, i_gb, i_b) and multi_contact:
+            #         self.func_multi_contact(i_ga, i_gb, i_b, i_f)
+            #         self.multi_contact_flag[i_b] = 1
 
         # Compute the final contact points and normals.
         n_contacts = 0
@@ -662,12 +662,12 @@ class GJK:
             si = ti.Vector([0, 1, 2, 3], dt=gs.ti_int)
 
             for i in range(self.gjk_max_iterations):
-                if i_ga == 8 and i_gb == 9:
-                    print("GJK Iteration:", i)
-                    print("Vertex 1:", self.simplex_vertex_intersect[i_b, 0].mink)
-                    print("Vertex 2:", self.simplex_vertex_intersect[i_b, 1].mink)
-                    print("Vertex 3:", self.simplex_vertex_intersect[i_b, 2].mink)
-                    print("Vertex 4:", self.simplex_vertex_intersect[i_b, 3].mink)
+                # if i_ga == 8 and i_gb == 9:
+                #     print("GJK Iteration:", i)
+                #     print("Vertex 1:", self.simplex_vertex_intersect[i_b, 0].mink)
+                #     print("Vertex 2:", self.simplex_vertex_intersect[i_b, 1].mink)
+                #     print("Vertex 3:", self.simplex_vertex_intersect[i_b, 2].mink)
+                #     print("Vertex 4:", self.simplex_vertex_intersect[i_b, 3].mink)
 
                 # Compute normal and signed distance of the triangle faces of the simplex with respect to the origin.
                 # These normals are supposed to point outwards from the simplex.
@@ -1270,12 +1270,13 @@ class GJK:
         for k in range(k_max):
             prev_nearest_i_f = nearest_i_f
 
-            # print("EPA iteration:", k)
-            # for i in range(self.polytope[i_b].nverts):
-            #     print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink)
-            # for i in range(self.polytope[i_b].nfaces_map):
-            #     i_f = self.polytope_faces_map[i_b][i]
-            #     print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
+            # if i_ga == 0 and i_gb == 1:
+            #     print("EPA iteration:", k)
+            #     for i in range(self.polytope[i_b].nverts):
+            #         print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink)
+            #     for i in range(self.polytope[i_b].nfaces_map):
+            #         i_f = self.polytope_faces_map[i_b][i]
+            #         print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
 
             # Find the polytope face with the smallest distance to the origin
             lower2 = self.FLOAT_MAX_SQ
@@ -1325,7 +1326,7 @@ class GJK:
                         repeated = True
                         break
                 if repeated:
-                    # print("Vertex w is already in the polytope, skipping...")
+                    print("Vertex w is already in the polytope, skipping...")
                     break
 
             self.polytope[i_b].horizon_w = w
@@ -1336,13 +1337,13 @@ class GJK:
             if horizon_flag:
                 # There was an error in the horizon construction, so the horizon edge is not a closed loop.
                 nearest_i_f = -1
-                # print("Horizon construction failed, stopping EPA.")
+                print("Horizon construction failed, stopping EPA.")
                 break
 
             if self.polytope[i_b].horizon_nedges < 3:
                 # Should not happen, because at least three edges should be in the horizon from one deleted face.
                 nearest_i_f = -1
-                # print("Horizon has less than 3 edges, stopping EPA.")
+                print("Horizon has less than 3 edges, stopping EPA.")
                 break
 
             # Check if the memory space is enough for attaching new faces
@@ -1350,7 +1351,7 @@ class GJK:
             nedges = self.polytope[i_b].horizon_nedges
             if nfaces + nedges >= self.polytope_max_faces:
                 # If the polytope is full, we cannot insert new faces
-                # print("Polytope is full, cannot insert new faces.")
+                print("Polytope is full, cannot insert new faces.")
                 break
 
             # Attach the new faces
@@ -1387,7 +1388,7 @@ class GJK:
                 if dist2 < -1.0:
                     # Unrecoverable numerical issue
                     nearest_i_f = -1
-                    # print("Unrecoverable numerical issue in EPA, stopping.")
+                    print("Unrecoverable numerical issue in EPA, stopping.")
                     break
 
                 if (dist2 >= lower2) and (dist2 <= upper2):
@@ -1402,7 +1403,7 @@ class GJK:
 
             if (self.polytope[i_b].nfaces_map == 0) or (nearest_i_f == -1):
                 # No face candidate left
-                # print("No face candidate left, stopping EPA.")
+                print("No face candidate left, stopping EPA.")
                 break
 
         if nearest_i_f != -1:
@@ -1444,6 +1445,8 @@ class GJK:
             face_v3,
         )
 
+        print("proj_o:", proj_o, "face v1:", face_v1, "face v2:", face_v2, "face v3:", face_v3)
+
         # Check if the projection was stable
         # face_vector = (face_v2 - face_v1).normalized()
         # proj_vector = (-proj_o).normalized()
@@ -1465,9 +1468,18 @@ class GJK:
 
         proj_o_lambda = v1 * _lambda[0] + v2 * _lambda[1] + v3 * _lambda[2]
         affine_error = (proj_o - proj_o_lambda).norm()
-        if affine_error > gs.EPS:
+        max_edge_len = max(
+            (v1 - v2).norm(),
+            (v2 - v3).norm(),
+            (v3 - v1).norm(),
+        )
+        rel_affine_error = affine_error / (max_edge_len + gs.EPS)
+        if rel_affine_error > 1e-5:
             flag = RETURN_CODE.FAIL
-        
+            print("lambda:", _lambda, "affine error:", f"{affine_error:.20g}", "rel. affine error:", f"{rel_affine_error:.20g}")
+        # if affine_error > gs.EPS:
+        #     flag = RETURN_CODE.FAIL
+
         if flag == RETURN_CODE.SUCCESS:
             # Point on geom 1
             v1 = self.polytope_verts[i_b, face.verts_idx[0]].obj1
@@ -3462,6 +3474,34 @@ class GJK:
             if d_box[i] == 0.0:
                 count *= 2
         return count
+    
+    @ti.func
+    def count_support_mesh(self, d, i_g, i_b):
+        """
+        Count the number of possible support points on a mesh in the given direction. 
+        
+        Brute-force search for the vertex with maximum dot product.
+        """
+        g_state = self._solver.geoms_state[i_g, i_b]
+        d_mesh = gu.ti_transform_by_quat(d, gu.ti_inv_quat(g_state.quat))
+
+        # Exhaustively search for the vertex with maximum dot product
+        fmax = -self.FLOAT_MAX
+        cnt = 0
+
+        vert_start = self._solver.geoms_info.vert_start[i_g]
+        vert_end = self._solver.geoms_info.vert_end[i_g]
+
+        for i in range(vert_start, vert_end):
+            pos = self._solver.verts_info[i].init_pos
+            vdot = d_mesh.dot(pos)
+            if vdot > fmax:
+                fmax = vdot
+                cnt = 1
+            elif vdot == fmax:
+                cnt += 1
+
+        return cnt
 
     @ti.func
     def count_support_driver(self, d, i_g, i_b):
@@ -3474,6 +3514,8 @@ class GJK:
         count = 1
         if geom_type == gs.GEOM_TYPE.BOX:
             count = self.count_support_box(d, i_g, i_b)
+        elif geom_type == gs.GEOM_TYPE.MESH:
+            count = self.count_support_mesh(d, i_g, i_b)
         return count
     
     @ti.func
