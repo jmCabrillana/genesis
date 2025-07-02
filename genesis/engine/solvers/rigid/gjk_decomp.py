@@ -66,6 +66,8 @@ class GJK:
         self.epa_max_iterations = 50
 
         # When using larger minimum values (e.g. gs.EPS), unstability could occur for some examples (e.g. box pyramid).
+        # Also, since different backends could have different precisions (e.g. computing vector norm), we use a very
+        # small value, so that there is no discrepancy between backends.
         self.FLOAT_MIN = gs.np_float(1e-15)
         self.FLOAT_MIN_SQ = self.FLOAT_MIN * self.FLOAT_MIN
 
@@ -238,6 +240,10 @@ class GJK:
         # Buffer for brute-force search of valid discrete simplex vertex.
         self.brute_force_simplex_vertex_id = ti.field(dtype=gs.ti_int, shape=(self._B,))
 
+        # Threshold for barycentric coordinates
+        self.barycentric_threshold = gs.np_float(1e-5)
+        self.simplex_degeneracy_threshold = gs.np_float(1e-5)
+
     @ti.func
     def clear_cache(self, i_b):
         """
@@ -267,7 +273,13 @@ class GJK:
         MuJoCo's original implementation:
         https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
         """
-        #print("Running GJK contact detection for pair:", i_ga, i_gb)
+        # print("")
+        # print("Running GJK contact detection for pair:", i_ga, i_gb)
+        # if i_ga == 9 and i_gb == 14:
+        #     print(f"A: {self._solver.geoms_state[i_ga, i_b].pos:.20g}, {self._solver.geoms_state[i_ga, i_b].quat:.20g}")
+        #     print(f"B: {self._solver.geoms_state[i_gb, i_b].pos:.20g}, {self._solver.geoms_state[i_gb, i_b].quat:.20g}")
+
+    
         self.clear_cache(i_b)
 
         gjk_flag = self.func_gjk_discrete(i_ga, i_gb, i_b)
@@ -324,7 +336,7 @@ class GJK:
 
                 normal = w2 - w1
                 normal_len = normal.norm()
-                if normal_len < gs.EPS:
+                if normal_len < self.FLOAT_MIN:
                     continue
 
                 normal = normal / normal_len
@@ -638,6 +650,8 @@ class GJK:
 
             obj1, obj2, id1, id2, minkowski = self.func_safe_support(i_ga, i_gb, i_b, dir, False, SAFE_SUPPORT_CODE.GJK)
             
+            #print("GJK Initial vertex", i, ":", minkowski)
+
             # Check if the new vertex would make a valid simplex.
             valid = self.func_is_new_discrete_simplex_vertex_valid(i_b, id1, id2, minkowski)
             
@@ -645,7 +659,7 @@ class GJK:
             if not valid:
                 obj1, obj2, id1, id2, minkowski, flag = \
                     self.func_search_valid_discrete_simplex_vertex(i_ga, i_gb, i_b)
-                
+                #print("GJK Brute-force vertex", i, ":", minkowski)    
                 # If the brute-force search failed, we cannot proceed with GJK.
                 if flag == RETURN_CODE.FAIL:
                     break
@@ -662,7 +676,7 @@ class GJK:
             si = ti.Vector([0, 1, 2, 3], dt=gs.ti_int)
 
             for i in range(self.gjk_max_iterations):
-                # if i_ga == 8 and i_gb == 9:
+                # if i_ga == 9 and i_gb == 10:
                 #     print("GJK Iteration:", i)
                 #     print("Vertex 1:", self.simplex_vertex_intersect[i_b, 0].mink)
                 #     print("Vertex 2:", self.simplex_vertex_intersect[i_b, 1].mink)
@@ -696,9 +710,10 @@ class GJK:
                 min_normal = self.simplex_buffer_intersect[i_b, min_i].normal
                 min_sdist = self.simplex_buffer_intersect[i_b, min_i].sdist
 
-                # print("Min index:", min_si)
-                # print("Min signed distance:", min_sdist)
-                # print("Min normal:", min_normal)
+                # if i_ga == 0 and i_gb == 1:
+                #     print("Min index:", min_si)
+                #     print("Min signed distance:", min_sdist)
+                #     print("Min normal:", min_normal)
 
                 # If origin is inside the simplex, the signed distances will all be positive
                 if min_sdist >= 0:
@@ -727,12 +742,12 @@ class GJK:
                     # If the new vertex is a duplicate, it means that the face with the min. sdist cannot be resolved,
                     # and thus we cannot proceed with GJK.
                     flag = RETURN_CODE.GJK_SEPARATED
-                    print("Duplicate simplex vertex found, GJK separation.")
+                    #print("Duplicate simplex vertex found, GJK separation.")
                     break
 
                 degenerate = self.func_is_new_simplex_degenerate(i_b, minkowski)
                 if degenerate:
-                    print("Degenerate simplex vertex found:", minkowski)
+                    #print("Degenerate simplex vertex found:", minkowski)
                     flag = RETURN_CODE.FAIL
                     break
                     
@@ -767,8 +782,8 @@ class GJK:
             self.distance[i_b] = 0.0
             self.nsimplex[i_b] = 4
         else:
-            if flag == RETURN_CODE.SUCCESS:
-                print("Max. iterations reached, GJK did not converge.")
+            # if flag == RETURN_CODE.SUCCESS:
+            #     print("Max. iterations reached, GJK did not converge.")
             flag = RETURN_CODE.GJK_SEPARATED
             self.distance[i_b] = self.FLOAT_MAX
             self.nsimplex[i_b] = 0
@@ -821,7 +836,7 @@ class GJK:
         for i in range(nverts):
             vert = self.simplex_vertex_intersect[i_b, i].mink
             dist = (vert - mink).norm()
-            if dist < gs.EPS:
+            if dist < self.simplex_degeneracy_threshold:
                 is_degenerate = True
                 break
 
@@ -849,15 +864,26 @@ class GJK:
     def func_is_colinear(self, v1, v2, v3):
         """
         Check if three points are collinear.
+
+        This function assumes non-degenerate case, i.e. all points are distinct.
         """
-        return (v2 - v1).cross(v3 - v1).norm() < gs.EPS
+        e1 = (v2 - v1).normalized()
+        e2 = (v3 - v1).normalized()
+        return e1.cross(e2).norm() < self.simplex_degeneracy_threshold
     
     @ti.func
     def func_is_coplanar(self, v1, v2, v3, v4):
         """        
         Check if four points are coplanar.
+
+        This function assumes non-degenerate case, i.e. all points are distinct and not collinear.
         """
-        return ti.abs((v2 - v1).cross(v3 - v1).dot(v4 - v1)) < gs.EPS
+        e1 = (v2 - v1).normalized()
+        e2 = (v3 - v1).normalized()
+        normal = (e1).cross(e2).normalized()
+        diff = (v4 - v1).normalized()
+        # print(f"coplanarity: {normal.dot(diff):.20g}")
+        return ti.abs(normal.dot(diff)) < self.simplex_degeneracy_threshold
 
     @ti.func
     def func_search_valid_discrete_simplex_vertex(self, i_ga, i_gb, i_b):
@@ -1273,7 +1299,7 @@ class GJK:
             # if i_ga == 0 and i_gb == 1:
             #     print("EPA iteration:", k)
             #     for i in range(self.polytope[i_b].nverts):
-            #         print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink)
+            #         print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink, "id1:", self.polytope_verts[i_b, i].id1, "id2:", self.polytope_verts[i_b, i].id2)
             #     for i in range(self.polytope[i_b].nfaces_map):
             #         i_f = self.polytope_faces_map[i_b][i]
             #         print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
@@ -1301,6 +1327,9 @@ class GJK:
             wi = self.func_epa_support(i_ga, i_gb, i_b, dir, 1.0)
             w = self.polytope_verts[i_b, wi].mink
 
+            # if i_ga == 0 and i_gb == 1:
+            #     print("w id:", self.polytope_verts[i_b, wi].id1, self.polytope_verts[i_b, wi].id2)
+
             # The upper bound of depth at k-th iteration
             upper_k = w.dot(dir)
             if upper_k < upper:
@@ -1310,14 +1339,18 @@ class GJK:
             # If the upper bound and lower bound are close enough, we can stop the algorithm
             # print("lower:", lower, "upper:", upper, "nearest face:", nearest_i_f)
             # print("dir:", dir, "w:", w)
+            # print(f"Upper - lower: {upper - lower:.20g}, upper: {upper:.20g}, lower: {lower:.20g}")
             if (upper - lower) < tolerance:
                 # print("EPA converged at iteration", k)
                 break
 
             if discrete:
                 repeated = False
-                for i in range(self.polytope[i_b].nverts - 1):
-                    if (
+                for i in range(self.polytope[i_b].nverts):
+                    #print("id1: ", self.polytope_verts[i_b, i].id1, "id2:", self.polytope_verts[i_b, i].id2)
+                    if i == wi:
+                        continue
+                    elif (
                         self.polytope_verts[i_b, i].id1 == self.polytope_verts[i_b, wi].id1
                         and self.polytope_verts[i_b, i].id2 == self.polytope_verts[i_b, wi].id2
                     ):
@@ -1326,7 +1359,7 @@ class GJK:
                         repeated = True
                         break
                 if repeated:
-                    print("Vertex w is already in the polytope, skipping...")
+                    #print(f"Vertex w ({self.polytope_verts[i_b, wi].id1}, {self.polytope_verts[i_b, wi].id2}) is already in the polytope, skipping.")
                     break
 
             self.polytope[i_b].horizon_w = w
@@ -1355,6 +1388,7 @@ class GJK:
                 break
 
             # Attach the new faces
+            valid_polytope = True
             for i in range(nedges):
                 # Face id of the current face to attach
                 i_f0 = nfaces + i
@@ -1387,7 +1421,7 @@ class GJK:
                 )
                 if dist2 < -1.0:
                     # Unrecoverable numerical issue
-                    nearest_i_f = -1
+                    valid_polytope = False
                     print("Unrecoverable numerical issue in EPA, stopping.")
                     break
 
@@ -1398,12 +1432,15 @@ class GJK:
                     self.polytope_faces[i_b, i_f0].map_idx = nfaces_map
                     self.polytope[i_b].nfaces_map += 1
 
+            if not valid_polytope:
+                break
+
             # Clear the horizon data for the next iteration
             self.polytope[i_b].horizon_nedges = 0
 
             if (self.polytope[i_b].nfaces_map == 0) or (nearest_i_f == -1):
                 # No face candidate left
-                print("No face candidate left, stopping EPA.")
+                print("No face candidate left, stopping EPA")
                 break
 
         if nearest_i_f != -1:
@@ -1445,7 +1482,7 @@ class GJK:
             face_v3,
         )
 
-        print("proj_o:", proj_o, "face v1:", face_v1, "face v2:", face_v2, "face v3:", face_v3)
+        # print("proj_o:", proj_o, "face v1:", face_v1, "face v2:", face_v2, "face v3:", face_v3)
 
         # Check if the projection was stable
         # face_vector = (face_v2 - face_v1).normalized()
@@ -1474,9 +1511,9 @@ class GJK:
             (v3 - v1).norm(),
         )
         rel_affine_error = affine_error / (max_edge_len + gs.EPS)
-        if rel_affine_error > 1e-5:
+        if rel_affine_error > self.barycentric_threshold:
             flag = RETURN_CODE.FAIL
-            print("lambda:", _lambda, "affine error:", f"{affine_error:.20g}", "rel. affine error:", f"{rel_affine_error:.20g}")
+            #print("lambda:", _lambda, "affine error:", f"{affine_error:.20g}", "rel. affine error:", f"{rel_affine_error:.20g}")
         # if affine_error > gs.EPS:
         #     flag = RETURN_CODE.FAIL
 
@@ -1936,29 +1973,100 @@ class GJK:
             self.polytope_verts[i_b, i_v1].mink,
         )
         if ret == RETURN_CODE.SUCCESS:
-            # Reorient the normal, so that it points towards outside of the polytope
+            face_center = (
+                self.polytope_verts[i_b, i_v1].mink +
+                self.polytope_verts[i_b, i_v2].mink +
+                self.polytope_verts[i_b, i_v3].mink
+            ) / 3.0
+
+            # Use origin for initialization
+            max_orient = normal.dot(-face_center)
+            max_abs_orient = ti.abs(max_orient)
+
+            # Consider other vertices in the polytope to reorient the normal
             nverts = self.polytope[i_b].nverts
             for i_v in range(nverts):
                 if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
-                    diff = self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink
+                    diff = (self.polytope_verts[i_b, i_v].mink - face_center)
                     orient = normal.dot(diff)
-                    if ti.abs(orient) > gs.EPS:
-                        if orient > 0:
-                            # If the normal points towards the vertex, flip it
-                            normal = -normal
-                        # print("Reorienting the normal to point outside of the polytope.")
-                        # print("i_v: ", i_v)
-                        # print("i_v1: ", i_v1)
-                        # print("i_v2: ", i_v2)
-                        # print("i_v3: ", i_v3)
-                        # print("Vertex mink v1: ", self.polytope_verts[i_b, i_v1].mink)
-                        # print("Standard diff: ", diff)
-                        # print("Orient: ", orient)
-                        break
+                    if ti.abs(orient) > max_abs_orient:
+                        max_abs_orient = ti.abs(orient)
+                        max_orient = orient
+
+            if max_orient > 0:
+                normal = -normal     
             
-            if normal.dot(-self.polytope_verts[i_b, i_v1].mink) > gs.EPS:
-                print("Something is wrong with the normal orientation, flipping it.")
-                print(f"{normal.dot(-self.polytope_verts[i_b, i_v1].mink)} > 0")
+            # Reorient the normal, so that it points towards outside of the polytope. We use FLOAT_MIN here instead of 
+            # EPS, because [orient] should be prioritized over the other vertices in the polytope in determining the 
+            # orientation of the normal. Only when the [orient] is too small, almost zero, we use the other vertices to 
+            # reorient the normal.
+            # orient = normal.dot(-self.polytope_verts[i_b, i_v1].mink)
+            # if ti.abs(orient) > self.FLOAT_MIN:
+            #     if orient > 0:
+            #         # If the normal points towards the origin, which should be inside the polytope, flip it
+            #         normal = -normal
+
+            #     origin_orient = orient
+            #     # Use other vertices to reorient the normal
+            #     nverts = self.polytope[i_b].nverts
+            #     max_abs_orient = gs.ti_float(0.0)
+            #     max_orient = gs.ti_float(0.0)
+            #     for i_v in range(nverts):
+            #         if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
+            #             diff = (self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink)
+            #             # diff_norm = diff.norm()
+            #             # if diff_norm < gs.EPS:
+            #             #     continue
+            #             orient = normal.dot(diff) # / diff_norm
+            #             if ti.abs(orient) > max_abs_orient:
+            #                 max_abs_orient = ti.abs(orient)
+            #                 max_orient = orient
+
+            #     if max_orient > 0:
+            #         print("Something wrong, flipping the normal: ", max_orient)     
+            #         print("Original orient")
+            #         print("v1:", normal.dot(-self.polytope_verts[i_b, i_v1].mink))
+            #         print("v2:", normal.dot(-self.polytope_verts[i_b, i_v2].mink))
+            #         print("v3:", normal.dot(-self.polytope_verts[i_b, i_v3].mink))
+
+            # else:
+            #     print("Falling back to the reorientation of the normal, because orient is too small.")
+            #     # Use other vertices to reorient the normal
+            #     nverts = self.polytope[i_b].nverts
+            #     max_abs_orient = gs.ti_float(0.0)
+            #     max_orient = gs.ti_float(0.0)
+            #     for i_v in range(nverts):
+            #         if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
+            #             diff = (self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink)
+            #             diff_norm = diff.norm()
+            #             if diff_norm < gs.EPS:
+            #                 continue
+            #             orient = normal.dot(diff) / diff_norm
+            #             if ti.abs(orient) > max_abs_orient:
+            #                 max_abs_orient = ti.abs(orient)
+            #                 max_orient = orient
+
+            #     if max_orient > 0:
+            #         normal = -normal     
+            
+            # nverts = self.polytope[i_b].nverts
+            # for i_v in range(nverts):
+            #     if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
+            #         diff = self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink
+            #         orient = normal.dot(diff)
+            #         if ti.abs(orient) > gs.EPS:
+            #             if orient > 0:
+            #                 # If the normal points towards the vertex, flip it
+            #                 normal = -normal
+            #             # print("Reorienting the normal to point outside of the polytope.")
+            #             # print("i_v: ", i_v)
+            #             # print("i_v1: ", i_v1)
+            #             # print("i_v2: ", i_v2)
+            #             # print("i_v3: ", i_v3)
+            #             # print("Vertex mink v1: ", self.polytope_verts[i_b, i_v1].mink)
+            #             # print("Standard diff: ", diff)
+            #             # print("Orient: ", orient)
+            #             break   
 
             self.polytope_faces[i_b, n].normal = normal
 
@@ -3163,7 +3271,7 @@ class GJK:
             d = dir if i == 0 else -dir
             i_g = i_ga if i == 0 else i_gb
 
-            sp, si = self.support_driver(d, i_g, i_b, i, shrink_sphere)
+            sp, si = self.support_driver(d, i_g, i_b, shrink_sphere)
             if i == 0:
                 support_point_obj1 = sp
                 support_point_id_obj1 = si
@@ -3300,7 +3408,7 @@ class GJK:
         pass
 
     @ti.func
-    def support_mesh(self, direction, i_g, i_b, i_o):
+    def support_mesh(self, direction, i_g, i_b):
         """
         Find the support point on a mesh in the given direction.
         """
@@ -3314,13 +3422,6 @@ class GJK:
         vert_start = self._solver.geoms_info.vert_start[i_g]
         vert_end = self._solver.geoms_info.vert_end[i_g]
 
-        # Use the previous maximum vertex if it is within the current range
-        prev_imax = self.support_vertex_id[i_b, i_o]
-        if (prev_imax >= vert_start) and (prev_imax < vert_end):
-            pos = self._solver.verts_info[prev_imax].init_pos
-            fmax = d_mesh.dot(pos)
-            imax = prev_imax
-
         for i in range(vert_start, vert_end):
             pos = self._solver.verts_info[i].init_pos
             vdot = d_mesh.dot(pos)
@@ -3331,13 +3432,11 @@ class GJK:
         v = self._solver.verts_info[imax].init_pos
         vid = imax
 
-        self.support_vertex_id[i_b, i_o] = vid
-
         v_ = gu.ti_transform_by_trans_quat(v, g_state.pos, g_state.quat)
         return v_, vid
 
     @ti.func
-    def support_driver(self, direction, i_g, i_b, i_o, shrink_sphere):
+    def support_driver(self, direction, i_g, i_b, shrink_sphere):
         """
         @ shrink_sphere: If True, use point and line support for sphere and capsule.
         """
@@ -3358,7 +3457,7 @@ class GJK:
                 v, vid = self.support_field._func_support_prism(direction, i_g, i_b)
         elif geom_type == gs.GEOM_TYPE.MESH: # and self._solver._enable_mujoco_compatibility:
             # If mujoco-compatible, do exhaustive search for the vertex
-            v, vid = self.support_mesh(direction, i_g, i_b, i_o)
+            v, vid = self.support_mesh(direction, i_g, i_b)
         else:
             v, vid = self.support_field._func_support_world(direction, i_g, i_b)
         return v, vid
@@ -3382,6 +3481,7 @@ class GJK:
         support_point_minkowski = support_point_obj1 - support_point_obj2
 
         for i in range(9):
+            #print("Iteration:", i, " of SafeSupport")
             px, py, pz = gs.ti_float(0.0), gs.ti_float(0.0), gs.ti_float(0.0)
             if i > 0:
                 j = i - 1
@@ -3389,7 +3489,15 @@ class GJK:
                 py = -1.0 if (j & 2) == 0 else 1.0      
                 pz = -1.0 if (j & 4) == 0 else 1.0
 
+            # n_dir = (dir + (gs.ti_vec3(px, py, pz) * gs.EPS))
+            # n_dir_norm = n_dir.norm()
+            # n_dir = n_dir / n_dir_norm
+
+            # n_dir_norm = n_dir.norm()
             n_dir = (dir + (gs.ti_vec3(px, py, pz) * gs.EPS)).normalized()
+            # n_dir_norm = n_dir.norm()
+            # print("n_dir:", f"{n_dir:.20g} (Before normalization: {dir + gs.ti_vec3(px, py, pz) * gs.EPS:.20g})")
+            # print("n_dir_norm:", f"{n_dir_norm:.20g}")
 
             num_supports = self.func_count_support(i_ga, i_gb, i_b, n_dir)
             if i > 0 and num_supports > 1:
@@ -3402,7 +3510,7 @@ class GJK:
                 d = n_dir if j == 0 else -n_dir
                 i_g = i_ga if j == 0 else i_gb
 
-                sp, si = self.support_driver(d, i_g, i_b, i, shrink_sphere)
+                sp, si = self.support_driver(d, i_g, i_b, shrink_sphere)
                 if j == 0:
                     support_point_obj1 = sp
                     support_point_id_obj1 = si
@@ -3439,16 +3547,18 @@ class GJK:
                         repeated = True
                         break
             
-            if not repeated:
-                break
+            if repeated:
+                continue
 
             # Check degeneracy
             degenerate = False
             if algo_code == SAFE_SUPPORT_CODE.GJK:
                 degenerate = self.func_is_new_simplex_degenerate(i_b, support_point_minkowski)
             
-            if not degenerate:
-                break
+            if degenerate:
+                continue
+
+            break
 
         return (
             support_point_obj1,
