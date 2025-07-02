@@ -1297,12 +1297,12 @@ class GJK:
             prev_nearest_i_f = nearest_i_f
 
             # if i_ga == 0 and i_gb == 1:
-            print("EPA iteration:", k)
-            for i in range(self.polytope[i_b].nverts):
-                print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink, "id1:", self.polytope_verts[i_b, i].id1, "id2:", self.polytope_verts[i_b, i].id2)
-            for i in range(self.polytope[i_b].nfaces_map):
-                i_f = self.polytope_faces_map[i_b][i]
-                print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
+            # print("EPA iteration:", k)
+            # for i in range(self.polytope[i_b].nverts):
+            #     print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink, "id1:", self.polytope_verts[i_b, i].id1, "id2:", self.polytope_verts[i_b, i].id2)
+            # for i in range(self.polytope[i_b].nfaces_map):
+            #     i_f = self.polytope_faces_map[i_b][i]
+            #     print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
 
             # Find the polytope face with the smallest distance to the origin
             lower2 = self.FLOAT_MAX_SQ
@@ -1388,7 +1388,7 @@ class GJK:
                 break
 
             # Attach the new faces
-            print("Attaching new faces to the polytope")
+            # print("Attaching new faces to the polytope")
             valid_polytope = True
             for i in range(nedges):
                 # Face id of the current face to attach
@@ -1426,7 +1426,7 @@ class GJK:
                     print("Unrecoverable numerical issue in EPA, stopping.")
                     break
 
-                print("dist2:", dist2, "lower2:", lower2, "upper2:", upper2)
+                # print("dist2:", dist2, "lower2:", lower2, "upper2:", upper2)
 
                 if (dist2 >= lower2) and (dist2 <= upper2):
                     # Store face in the map
