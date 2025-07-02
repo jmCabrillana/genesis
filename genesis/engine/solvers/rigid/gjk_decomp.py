@@ -1297,12 +1297,12 @@ class GJK:
             prev_nearest_i_f = nearest_i_f
 
             # if i_ga == 0 and i_gb == 1:
-            #     print("EPA iteration:", k)
-            #     for i in range(self.polytope[i_b].nverts):
-            #         print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink, "id1:", self.polytope_verts[i_b, i].id1, "id2:", self.polytope_verts[i_b, i].id2)
-            #     for i in range(self.polytope[i_b].nfaces_map):
-            #         i_f = self.polytope_faces_map[i_b][i]
-            #         print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
+            print("EPA iteration:", k)
+            for i in range(self.polytope[i_b].nverts):
+                print("Polytope vertex", i, ":", self.polytope_verts[i_b, i].mink, "id1:", self.polytope_verts[i_b, i].id1, "id2:", self.polytope_verts[i_b, i].id2)
+            for i in range(self.polytope[i_b].nfaces_map):
+                i_f = self.polytope_faces_map[i_b][i]
+                print("Polytope face", i_f, ":", self.polytope_faces[i_b, i_f].verts_idx)
 
             # Find the polytope face with the smallest distance to the origin
             lower2 = self.FLOAT_MAX_SQ
@@ -1388,6 +1388,7 @@ class GJK:
                 break
 
             # Attach the new faces
+            print("Attaching new faces to the polytope")
             valid_polytope = True
             for i in range(nedges):
                 # Face id of the current face to attach
@@ -1424,6 +1425,8 @@ class GJK:
                     valid_polytope = False
                     print("Unrecoverable numerical issue in EPA, stopping.")
                     break
+
+                print("dist2:", dist2, "lower2:", lower2, "upper2:", upper2)
 
                 if (dist2 >= lower2) and (dist2 <= upper2):
                     # Store face in the map
@@ -1995,83 +1998,11 @@ class GJK:
 
             if max_orient > 0:
                 normal = -normal     
-            
-            # Reorient the normal, so that it points towards outside of the polytope. We use FLOAT_MIN here instead of 
-            # EPS, because [orient] should be prioritized over the other vertices in the polytope in determining the 
-            # orientation of the normal. Only when the [orient] is too small, almost zero, we use the other vertices to 
-            # reorient the normal.
-            # orient = normal.dot(-self.polytope_verts[i_b, i_v1].mink)
-            # if ti.abs(orient) > self.FLOAT_MIN:
-            #     if orient > 0:
-            #         # If the normal points towards the origin, which should be inside the polytope, flip it
-            #         normal = -normal
-
-            #     origin_orient = orient
-            #     # Use other vertices to reorient the normal
-            #     nverts = self.polytope[i_b].nverts
-            #     max_abs_orient = gs.ti_float(0.0)
-            #     max_orient = gs.ti_float(0.0)
-            #     for i_v in range(nverts):
-            #         if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
-            #             diff = (self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink)
-            #             # diff_norm = diff.norm()
-            #             # if diff_norm < gs.EPS:
-            #             #     continue
-            #             orient = normal.dot(diff) # / diff_norm
-            #             if ti.abs(orient) > max_abs_orient:
-            #                 max_abs_orient = ti.abs(orient)
-            #                 max_orient = orient
-
-            #     if max_orient > 0:
-            #         print("Something wrong, flipping the normal: ", max_orient)     
-            #         print("Original orient")
-            #         print("v1:", normal.dot(-self.polytope_verts[i_b, i_v1].mink))
-            #         print("v2:", normal.dot(-self.polytope_verts[i_b, i_v2].mink))
-            #         print("v3:", normal.dot(-self.polytope_verts[i_b, i_v3].mink))
-
-            # else:
-            #     print("Falling back to the reorientation of the normal, because orient is too small.")
-            #     # Use other vertices to reorient the normal
-            #     nverts = self.polytope[i_b].nverts
-            #     max_abs_orient = gs.ti_float(0.0)
-            #     max_orient = gs.ti_float(0.0)
-            #     for i_v in range(nverts):
-            #         if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
-            #             diff = (self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink)
-            #             diff_norm = diff.norm()
-            #             if diff_norm < gs.EPS:
-            #                 continue
-            #             orient = normal.dot(diff) / diff_norm
-            #             if ti.abs(orient) > max_abs_orient:
-            #                 max_abs_orient = ti.abs(orient)
-            #                 max_orient = orient
-
-            #     if max_orient > 0:
-            #         normal = -normal     
-            
-            # nverts = self.polytope[i_b].nverts
-            # for i_v in range(nverts):
-            #     if i_v != i_v1 and i_v != i_v2 and i_v != i_v3:
-            #         diff = self.polytope_verts[i_b, i_v].mink - self.polytope_verts[i_b, i_v1].mink
-            #         orient = normal.dot(diff)
-            #         if ti.abs(orient) > gs.EPS:
-            #             if orient > 0:
-            #                 # If the normal points towards the vertex, flip it
-            #                 normal = -normal
-            #             # print("Reorienting the normal to point outside of the polytope.")
-            #             # print("i_v: ", i_v)
-            #             # print("i_v1: ", i_v1)
-            #             # print("i_v2: ", i_v2)
-            #             # print("i_v3: ", i_v3)
-            #             # print("Vertex mink v1: ", self.polytope_verts[i_b, i_v1].mink)
-            #             # print("Standard diff: ", diff)
-            #             # print("Orient: ", orient)
-            #             break   
 
             self.polytope_faces[i_b, n].normal = normal
 
             # Compute the squared distance of the face to the origin
-            dist = normal.dot(self.polytope_verts[i_b, i_v1].mink)
+            dist = normal.dot(face_center)
             dist2 = dist ** 2
             self.polytope_faces[i_b, n].dist2 = dist2
             self.polytope_faces[i_b, n].map_idx = -1  # No map index yet
