@@ -1290,7 +1290,7 @@ class GJK:
         discrete = self.func_is_discrete_geoms(i_ga, i_gb, i_b)
         if discrete:
             # If the objects are discrete, we do not use tolerance.
-            tolerance = self.FLOAT_MIN
+            tolerance = gs.EPS
 
         k_max = self.epa_max_iterations
         for k in range(k_max):
@@ -1389,7 +1389,7 @@ class GJK:
 
             # Attach the new faces
             # print("Attaching new faces to the polytope")
-            valid_polytope = True
+            attach_flag = RETURN_CODE.SUCCESS
             for i in range(nedges):
                 # Face id of the current face to attach
                 i_f0 = nfaces + i
@@ -1411,7 +1411,7 @@ class GJK:
                 adj_i_f_1 = horizon_i_f
                 adj_i_f_2 = i_f1
 
-                dist2 = self.func_attach_face_to_polytope(
+                attach_flag = self.func_attach_face_to_polytope(
                     i_b,
                     wi,
                     horizon_v2,
@@ -1420,22 +1420,22 @@ class GJK:
                     adj_i_f_1,
                     adj_i_f_0,  # Next face id
                 )
-                if dist2 < -1.0:
+                if attach_flag != RETURN_CODE.SUCCESS:
                     # Unrecoverable numerical issue
-                    valid_polytope = False
-                    print("Unrecoverable numerical issue in EPA, stopping.")
+                    # print("Unrecoverable numerical issue in EPA, stopping.")
                     break
 
                 # print("dist2:", dist2, "lower2:", lower2, "upper2:", upper2)
 
-                if (dist2 >= lower2) and (dist2 <= upper2):
+                dist2 = self.polytope_faces[i_b, self.polytope[i_b].nfaces - 1].dist2
+                if (dist2 >= lower2 - gs.EPS) and (dist2 <= upper2 + gs.EPS):
                     # Store face in the map
                     nfaces_map = self.polytope[i_b].nfaces_map
                     self.polytope_faces_map[i_b][nfaces_map] = i_f0
                     self.polytope_faces[i_b, i_f0].map_idx = nfaces_map
                     self.polytope[i_b].nfaces_map += 1
 
-            if not valid_polytope:
+            if attach_flag != RETURN_CODE.SUCCESS:
                 break
 
             # Clear the horizon data for the next iteration
@@ -1958,7 +1958,7 @@ class GJK:
         float
             Squared distance of the face to the origin.
         """
-        dist2 = -10.0
+        dist2 = gs.ti_float(0.0)
 
         n = self.polytope[i_b].nfaces
         self.polytope_faces[i_b, n].verts_idx[0] = i_v1
@@ -1970,12 +1970,12 @@ class GJK:
         self.polytope[i_b].nfaces += 1
 
         # Compute the normal of the plane
-        normal, ret = self.func_plane_normal(
+        normal, flag = self.func_plane_normal(
             self.polytope_verts[i_b, i_v3].mink,
             self.polytope_verts[i_b, i_v2].mink,
             self.polytope_verts[i_b, i_v1].mink,
         )
-        if ret == RETURN_CODE.SUCCESS:
+        if flag == RETURN_CODE.SUCCESS:
             face_center = (
                 self.polytope_verts[i_b, i_v1].mink +
                 self.polytope_verts[i_b, i_v2].mink +
@@ -2001,14 +2001,26 @@ class GJK:
 
             self.polytope_faces[i_b, n].normal = normal
 
-            # Compute the squared distance of the face to the origin
-            dist = normal.dot(face_center)
-            dist2 = dist ** 2
+            # Compute the safe lower bound of the penetration depth. We can do this by taking the minimum dot product
+            # between the face normal and the vertices of the polytope face. This is safer than selecting one of the
+            # vertices, because the face normal could be unstable, which ends up in significantly different dot product
+            # values for different vertices.
+            min_dist2 = self.FLOAT_MAX
+            for i in range(3):
+                i_v = i_v1
+                if i == 1:
+                    i_v = i_v2
+                elif i == 2:
+                    i_v = i_v3
+                v = self.polytope_verts[i_b, i_v].mink
+                dist2 = normal.dot(v) ** 2
+                if dist2 < min_dist2:
+                    min_dist2 = dist2
+            dist2 = min_dist2
             self.polytope_faces[i_b, n].dist2 = dist2
             self.polytope_faces[i_b, n].map_idx = -1  # No map index yet
-            dist2 = self.polytope_faces[i_b, n].dist2
 
-        return dist2
+        return flag
     
     @ti.func
     def func_plane_normal(self, v1, v2, v3):
