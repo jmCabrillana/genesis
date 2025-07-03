@@ -1301,7 +1301,7 @@ class Collider:
                         ### GJK
                         elif ti.static(self.ccd_algorithm == CCD_ALGORITHM_CODE.GJK):
                             # If it was not the first detection, only detect single contact point.
-                            self._gjk.func_gjk_contact(i_ga, i_gb, i_b, i_detection == 0)
+                            self._gjk.func_gjk_contact(i_ga, i_gb, i_b)
 
                             is_col = self._gjk.is_col[i_b] == 1
                             penetration = self._gjk.penetration[i_b]
