@@ -910,9 +910,23 @@ class GJK:
                     self.brute_force_simplex_vertex_id[i_b] = (m + 1) % num_cases
                     break
         else:
-            # TODO: If the geometries are not discrete, we can use a different approach to find a valid simplex vertex.
-            # But this is rarely needed, so we can just return a failure.
-            pass
+            # Try search direction based on the current simplex.
+            nverts = self.simplex[i_b].nverts
+            if nverts == 3:
+                # If we have a triangle, use its normal as the search direction.
+                v1 = self.simplex_vertex_intersect[i_b, 0].mink
+                v2 = self.simplex_vertex_intersect[i_b, 1].mink
+                v3 = self.simplex_vertex_intersect[i_b, 2].mink
+                dir = (v3 - v1).cross(v2 - v1).normalized()
+                
+                for i in range(2):
+                    d = dir if i == 0 else -dir
+                    obj1, obj2, id1, id2, minkowski = self.func_safe_gjk_support(i_ga, i_gb, i_b, d)
+                    
+                    # Check if the new vertex is valid
+                    if self.func_is_new_simplex_vertex_valid(i_b, id1, id2, minkowski):
+                        flag = RETURN_CODE.SUCCESS
+                        break
 
         return obj1, obj2, id1, id2, minkowski, flag
 
