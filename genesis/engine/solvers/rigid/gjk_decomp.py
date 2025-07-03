@@ -282,7 +282,7 @@ class GJK:
     
         self.clear_cache(i_b)
 
-        gjk_flag = self.func_gjk_discrete(i_ga, i_gb, i_b)
+        gjk_flag = self.func_safe_gjk(i_ga, i_gb, i_b)
         #print("GJK finished, return code:", gjk_flag)
         
         distance = self.distance[i_b]
@@ -631,9 +631,10 @@ class GJK:
         return flag
 
     @ti.func
-    def func_gjk_discrete(self, i_ga, i_gb, i_b):
+    def func_safe_gjk(self, i_ga, i_gb, i_b):
         """
-        GJK algorithm to check collision between two convex discrete geometries.
+        Safe GJK algorithm to check collision between two convex geometries, which tries to generate a non-degenerate 
+        tetrahedron as much as possible, so that it could be robustly used in the following EPA algorithm.
         """
         dir0 = gs.ti_vec3(0, 0, 1)
         dir1 = gs.ti_vec3(0, 1, 0)
@@ -648,18 +649,16 @@ class GJK:
             else:
                 dir = dir1 if i % 2 == 0 else -dir1
 
-            obj1, obj2, id1, id2, minkowski = self.func_safe_support(i_ga, i_gb, i_b, dir, False, SAFE_SUPPORT_CODE.GJK)
+            obj1, obj2, id1, id2, minkowski = self.func_safe_gjk_support(i_ga, i_gb, i_b, dir)
             
             #print("GJK Initial vertex", i, ":", minkowski)
 
             # Check if the new vertex would make a valid simplex.
-            valid = self.func_is_new_discrete_simplex_vertex_valid(i_b, id1, id2, minkowski)
+            valid = self.func_is_new_simplex_vertex_valid(i_b, id1, id2, minkowski)
             
             # If this is not a valid vertex, fall back to a brute-force routine to find a valid vertex.
             if not valid:
-                obj1, obj2, id1, id2, minkowski, flag = \
-                    self.func_search_valid_discrete_simplex_vertex(i_ga, i_gb, i_b)
-                #print("GJK Brute-force vertex", i, ":", minkowski)    
+                obj1, obj2, id1, id2, minkowski, flag = self.func_search_valid_simplex_vertex(i_ga, i_gb, i_b)
                 # If the brute-force search failed, we cannot proceed with GJK.
                 if flag == RETURN_CODE.FAIL:
                     break
@@ -735,33 +734,22 @@ class GJK:
                     self.simplex_vertex_intersect[i_b, min_si].mink = self.simplex_vertex_intersect[i_b, 3].mink
 
                 # Find a new candidate vertex to replace the worst vertex (which has the smallest signed distance)
-                obj1, obj2, id1, id2, minkowski = self.func_safe_support(i_ga, i_gb, i_b, min_normal, False, SAFE_SUPPORT_CODE.GJK)
+                obj1, obj2, id1, id2, minkowski = self.func_safe_gjk_support(i_ga, i_gb, i_b, min_normal)
                 
-                duplicate = self.func_is_new_discrete_simplex_vertex_duplicate(i_b, id1, id2)
+                duplicate = self.func_is_new_simplex_vertex_duplicate(i_b, id1, id2)
                 if duplicate:
-                    # If the new vertex is a duplicate, it means that the face with the min. sdist cannot be resolved,
-                    # and thus we cannot proceed with GJK.
+                    # If the new vertex is a duplicate, it means separation.
                     flag = RETURN_CODE.GJK_SEPARATED
                     #print("Duplicate simplex vertex found, GJK separation.")
                     break
 
-                degenerate = self.func_is_new_simplex_degenerate(i_b, minkowski)
+                degenerate = self.func_is_new_simplex_vertex_degenerate(i_b, minkowski)
                 if degenerate:
+                    # If the new vertex is degenerate, we cannot proceed with GJK.
                     #print("Degenerate simplex vertex found:", minkowski)
                     flag = RETURN_CODE.FAIL
                     break
                     
-                # # If this is not a valid vertex, fall back to a brute-force routine to find a valid vertex.
-                # if degenerate:
-                #     #print("Bruteforce search for a valid simplex vertex.")
-                #     obj1, obj2, id1, id2, minkowski, search_flag = \
-                #         self.func_search_valid_discrete_simplex_vertex(i_ga, i_gb, i_b)
-                #     if search_flag == RETURN_CODE.FAIL:
-                #         flag = RETURN_CODE.FAIL
-                #         #print("Failed to find a valid simplex vertex (Bruteforce).")
-                #         break
-                # else:
-                
                 # Check if the origin is strictly outside of the Minkowski difference (which means there is no collision)
                 is_no_collision = minkowski.dot(min_normal) < 0
                 if is_no_collision:
@@ -791,41 +779,35 @@ class GJK:
         return flag
     
     @ti.func
-    def func_is_new_discrete_simplex_vertex_valid(self, i_b, id1, id2, mink):
+    def func_is_new_simplex_vertex_valid(self, i_b, id1, id2, mink):
         """
-        Check validity of the incoming simplex vertex, which comes from two discrete geometries.
+        Check validity of the incoming simplex vertex.
 
         To be a new valid simplex vertex, it should satisfy the following conditions:
         1) The vertex should not be already in the simplex.
         2) The simplex should not be degenerate after insertion.
         """
-        valid = True
-        is_duplicate = self.func_is_new_discrete_simplex_vertex_duplicate(i_b, id1, id2)
-        if is_duplicate:
-            valid = False
-            # print("Duplicate simplex vertex found:", id1, id2)
-        else:
-            is_degenerate = self.func_is_new_simplex_degenerate(i_b, mink)
-            if is_degenerate:
-                valid = False
-                # print("Degenerate simplex vertex found:", id1, id2, "Minkowski:", mink)
-        return valid
+        return (not self.func_is_new_simplex_vertex_duplicate(i_b, id1, id2)) and \
+                (not self.func_is_new_simplex_vertex_degenerate(i_b, mink))
 
     @ti.func
-    def func_is_new_discrete_simplex_vertex_duplicate(self, i_b, id1, id2):
+    def func_is_new_simplex_vertex_duplicate(self, i_b, id1, id2):
         """
-        Check if the simplex vertex with given ids is already in the simplex.
+        Check if the incoming simplex vertex is already in the simplex.
         """
         nverts = self.simplex[i_b].nverts
         found = False
         for i in range(nverts):
-            if (self.simplex_vertex_intersect[i_b, i].id1 == id1) and (self.simplex_vertex_intersect[i_b, i].id2 == id2):
-                found = True
-                break
+            if id1 == -1 or (self.simplex_vertex_intersect[i_b, i].id1 != id1):
+                continue
+            if id2 == -1 or (self.simplex_vertex_intersect[i_b, i].id2 != id2):
+                continue
+            found = True
+            break
         return found
     
     @ti.func
-    def func_is_new_simplex_degenerate(self, i_b, mink):
+    def func_is_new_simplex_vertex_degenerate(self, i_b, mink):
         """
         Check if the simplex becomes degenerate after inserting a new vertex, assuming that the current simplex is okay.
         """
@@ -865,7 +847,7 @@ class GJK:
         """
         Check if three points are collinear.
 
-        This function assumes non-degenerate case, i.e. all points are distinct.
+        This function assumes that every pair of points is degenerate, i.e. no pair of points is identical.
         """
         e1 = (v2 - v1).normalized()
         e2 = (v3 - v1).normalized()
@@ -876,7 +858,7 @@ class GJK:
         """        
         Check if four points are coplanar.
 
-        This function assumes non-degenerate case, i.e. all points are distinct and not collinear.
+        This function assumes that every triplet of points is degenerate, i.e. no triplet of points is collinear.
         """
         e1 = (v2 - v1).normalized()
         e2 = (v3 - v1).normalized()
@@ -886,53 +868,51 @@ class GJK:
         return ti.abs(normal.dot(diff)) < self.simplex_degeneracy_threshold
 
     @ti.func
-    def func_search_valid_discrete_simplex_vertex(self, i_ga, i_gb, i_b):
+    def func_search_valid_simplex_vertex(self, i_ga, i_gb, i_b):
         """
         Search for a valid simplex vertex in the Minkowski difference.
         """
-        geom_nverts = gs.ti_ivec2(0, 0)
-        for i in range(2):
-            geom_nverts[i] = self.func_num_discrete_geom_vertices(i_ga if i == 0 else i_gb, i_b)
-
         obj1 = gs.ti_vec3(0.0, 0.0, 0.0)
         obj2 = gs.ti_vec3(0.0, 0.0, 0.0)
         id1 = -1
         id2 = -1
         minkowski = gs.ti_vec3(0.0, 0.0, 0.0)
         flag = RETURN_CODE.FAIL
+        
+        # If both geometries are discrete, we can use a brute-force search to find a valid simplex vertex.
+        if self.func_is_discrete_geoms(i_ga, i_gb, i_b):
+            geom_nverts = gs.ti_ivec2(0, 0)
+            for i in range(2):
+                geom_nverts[i] = self.func_num_discrete_geom_vertices(i_ga if i == 0 else i_gb, i_b)
 
-        num_cases = geom_nverts[0] * geom_nverts[1]
-        for k in range(num_cases):
-            m = (k + self.brute_force_simplex_vertex_id[i_b]) % num_cases
-            i = m // geom_nverts[1]
-            j = m % geom_nverts[1]
+            num_cases = geom_nverts[0] * geom_nverts[1]
+            for k in range(num_cases):
+                m = (k + self.brute_force_simplex_vertex_id[i_b]) % num_cases
+                i = m // geom_nverts[1]
+                j = m % geom_nverts[1]
 
-            id1 = self._solver.geoms_info.vert_start[i_ga] + i
-            id2 = self._solver.geoms_info.vert_start[i_gb] + j
-
-            # Check if the vertex is already in the simplex
-            duplicate = self.func_is_new_discrete_simplex_vertex_duplicate(i_b, id1, id2)
-            if duplicate:
-                continue
-
-            for p in range(2):
-                obj = self.func_get_discrete_geom_vertex(
-                    i_ga if p == 0 else i_gb, i_b, i if p == 0 else j
-                )
-                if p == 0:
-                    obj1 = obj
-                else:
-                    obj2 = obj
-            minkowski = obj1 - obj2
-
-            # Check if the Minkowski vertex is valid
-            degenerate = self.func_is_new_simplex_degenerate(i_b, minkowski)
-            if not degenerate:
-                # Found a valid simplex vertex
-                flag = RETURN_CODE.SUCCESS
-                # Update buffer
-                self.brute_force_simplex_vertex_id[i_b] = (m + 1) % num_cases
-                break
+                id1 = self._solver.geoms_info.vert_start[i_ga] + i
+                id2 = self._solver.geoms_info.vert_start[i_gb] + j
+                for p in range(2):
+                    obj = self.func_get_discrete_geom_vertex(
+                        i_ga if p == 0 else i_gb, i_b, i if p == 0 else j
+                    )
+                    if p == 0:
+                        obj1 = obj
+                    else:
+                        obj2 = obj
+                minkowski = obj1 - obj2
+                
+                # Check if the new vertex is valid
+                if self.func_is_new_simplex_vertex_valid(i_b, id1, id2, minkowski):
+                    flag = RETURN_CODE.SUCCESS
+                    # Update buffer
+                    self.brute_force_simplex_vertex_id[i_b] = (m + 1) % num_cases
+                    break
+        else:
+            # TODO: If the geometries are not discrete, we can use a different approach to find a valid simplex vertex.
+            # But this is rarely needed, so we can just return a failure.
+            pass
 
         return obj1, obj2, id1, id2, minkowski, flag
 
@@ -3406,22 +3386,20 @@ class GJK:
         return v, vid
     
     @ti.func
-    def func_safe_support(self, i_ga, i_gb, i_b, dir, shrink_sphere, algo_code):
+    def func_safe_gjk_support(self, i_ga, i_gb, i_b, dir):
         """
-        Find support points on the two objects using [dir].
+        Find support points on the two objects using [dir] to use in the [safe_gjk] algorithm.
 
         Parameters:
         ----------
         dir: gs.ti_vec3
             The unit direction in which to find the support points, from [ga] (obj 1) to [gb] (obj 2).
-        algo_code: int
-            The algorithm code to use for finding the support points that have not been found yet.
         """
-        support_point_obj1 = gs.ti_vec3(0, 0, 0)
-        support_point_obj2 = gs.ti_vec3(0, 0, 0)
-        support_point_id_obj1 = -1
-        support_point_id_obj2 = -1
-        support_point_minkowski = support_point_obj1 - support_point_obj2
+        obj1 = gs.ti_vec3(0, 0, 0)
+        obj2 = gs.ti_vec3(0, 0, 0)
+        id1 = -1
+        id2 = -1
+        mink = obj1 - obj2
 
         for i in range(9):
             #print("Iteration:", i, " of SafeSupport")
@@ -3453,15 +3431,15 @@ class GJK:
                 d = n_dir if j == 0 else -n_dir
                 i_g = i_ga if j == 0 else i_gb
 
-                sp, si = self.support_driver(d, i_g, i_b, shrink_sphere)
+                sp, si = self.support_driver(d, i_g, i_b, False)
                 if j == 0:
-                    support_point_obj1 = sp
-                    support_point_id_obj1 = si
+                    obj1 = sp
+                    id1 = si
                 else:
-                    support_point_obj2 = sp
-                    support_point_id_obj2 = si
+                    obj2 = sp
+                    id2 = si
 
-            support_point_minkowski = support_point_obj1 - support_point_obj2
+            mink = obj1 - obj2
 
             if i == 0:
                 if num_supports > 1:
@@ -3476,40 +3454,11 @@ class GJK:
                 # If this was the last iteration, we don't check if it has been found before.
                 break
 
-            repeated = False
-            if algo_code == SAFE_SUPPORT_CODE.GJK:
-                for j in range(self.simplex[i_b].nverts):
-                    if self.simplex_vertex_intersect[i_b, j].id1 == support_point_id_obj1 and \
-                        self.simplex_vertex_intersect[i_b, j].id2 == support_point_id_obj2:
-                        repeated = True
-                        break
-            elif algo_code == SAFE_SUPPORT_CODE.EPA:
-                for j in range(self.polytope[i_b].nverts):
-                    if self.polytope_verts[i_b, j].id1 == support_point_id_obj1 and \
-                        self.polytope_verts[i_b, j].id2 == support_point_id_obj2:
-                        repeated = True
-                        break
-            
-            if repeated:
-                continue
+            # Check if the updated simplex would be a degenerate simplex.
+            if self.func_is_new_simplex_vertex_valid(i_b, id1, id2, mink):
+                break
 
-            # Check degeneracy
-            degenerate = False
-            if algo_code == SAFE_SUPPORT_CODE.GJK:
-                degenerate = self.func_is_new_simplex_degenerate(i_b, support_point_minkowski)
-            
-            if degenerate:
-                continue
-
-            break
-
-        return (
-            support_point_obj1,
-            support_point_obj2,
-            support_point_id_obj1,
-            support_point_id_obj2,
-            support_point_minkowski
-        )
+        return (obj1, obj2, id1, id2, mink)
 
     @ti.func
     def count_support_driver(self, d, i_g, i_b):
