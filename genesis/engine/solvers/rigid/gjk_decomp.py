@@ -3398,9 +3398,9 @@ class GJK:
         elif geom_type == gs.GEOM_TYPE.TERRAIN:
             if ti.static(self._solver.collider._has_terrain):
                 v, vid = self.support_field._func_support_prism(direction, i_g, i_b)
-        elif geom_type == gs.GEOM_TYPE.MESH: # and self._solver._enable_mujoco_compatibility:
-            # If mujoco-compatible, do exhaustive search for the vertex
-            v, vid = self.support_mesh(direction, i_g, i_b)
+        # elif geom_type == gs.GEOM_TYPE.MESH: # and self._solver._enable_mujoco_compatibility:
+        #     # If mujoco-compatible, do exhaustive search for the vertex
+        #     v, vid = self.support_mesh(direction, i_g, i_b)
         else:
             v, vid = self.support_field._func_support_world(direction, i_g, i_b)
         return v, vid
@@ -3510,51 +3510,6 @@ class GJK:
             support_point_id_obj2,
             support_point_minkowski
         )
-    
-    @ti.func
-    def count_support_box(self, d, i_g, i_b):
-        """
-        Count the number of possible support points on a box in the given direction. 
-        
-        If the direction has 1 zero component, there are 2 possible support points. If the direction has 2 zero 
-        components, there are 4 possible support points.
-        """
-        g_state = self._solver.geoms_state[i_g, i_b]
-        d_box = gu.ti_inv_transform_by_quat(d, g_state.quat)
-
-        count = 1
-        for i in ti.static(range(3)):
-            if d_box[i] == 0.0:
-                count *= 2
-        return count
-    
-    @ti.func
-    def count_support_mesh(self, d, i_g, i_b):
-        """
-        Count the number of possible support points on a mesh in the given direction. 
-        
-        Brute-force search for the vertex with maximum dot product.
-        """
-        g_state = self._solver.geoms_state[i_g, i_b]
-        d_mesh = gu.ti_transform_by_quat(d, gu.ti_inv_quat(g_state.quat))
-
-        # Exhaustively search for the vertex with maximum dot product
-        fmax = -self.FLOAT_MAX
-        cnt = 0
-
-        vert_start = self._solver.geoms_info.vert_start[i_g]
-        vert_end = self._solver.geoms_info.vert_end[i_g]
-
-        for i in range(vert_start, vert_end):
-            pos = self._solver.verts_info[i].init_pos
-            vdot = d_mesh.dot(pos)
-            if vdot > fmax:
-                fmax = vdot
-                cnt = 1
-            elif vdot == fmax:
-                cnt += 1
-
-        return cnt
 
     @ti.func
     def count_support_driver(self, d, i_g, i_b):
@@ -3566,9 +3521,9 @@ class GJK:
         geom_type = self._solver.geoms_info[i_g].type
         count = 1
         if geom_type == gs.GEOM_TYPE.BOX:
-            count = self.count_support_box(d, i_g, i_b)
+            count = self.support_field._func_count_supports_box(d, i_g, i_b)
         elif geom_type == gs.GEOM_TYPE.MESH:
-            count = self.count_support_mesh(d, i_g, i_b)
+            count = self.support_field._func_count_supports_world(d, i_g, i_b)
         return count
     
     @ti.func
