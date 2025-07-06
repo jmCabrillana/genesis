@@ -18,7 +18,6 @@ backend = gs.cpu if cpu else gs.gpu
 
 gs.init(backend=backend, precision="32")
 
-# scene = gs.Scene(show_viewer=True)
 scene = gs.Scene(
     viewer_options=gs.options.ViewerOptions(
         camera_pos=(0, -5.5, 2.5),
@@ -53,7 +52,6 @@ for i in range(num_cubes):
     for j in range(num_cubes - i):
         box = scene.add_entity(
             gs.morphs.Box(size=box_size * vec_one, pos=box_pos_offset + box_spacing * np.array([i + 0.5 * j, 0, j])),
-            # visualize_contact=(i == 0 and j == 4),
         )
 
 scene.build()

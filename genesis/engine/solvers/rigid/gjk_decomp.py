@@ -80,10 +80,10 @@ class GJK:
         # Also, since different backends could have different precisions (e.g. computing vector norm), we use a very
         # small value, so that there is no discrepancy between backends.
         self.FLOAT_MIN = gs.np_float(1e-15)
-        self.FLOAT_MIN_SQ = self.FLOAT_MIN * self.FLOAT_MIN
+        self.FLOAT_MIN_SQ = self.FLOAT_MIN ** 2
 
         self.FLOAT_MAX = gs.np_float(1e15)
-        self.FLOAT_MAX_SQ = self.FLOAT_MAX * self.FLOAT_MAX
+        self.FLOAT_MAX_SQ = self.FLOAT_MAX ** 2
 
         # Tolerance for stopping GJK and EPA algorithms when they converge (only for non-discrete geometries).
         self.tolerance = gs.np_float(1e-6)
@@ -200,11 +200,11 @@ class GJK:
         self.enable_mujoco_multi_contact = False
         if self.enable_mujoco_multi_contact:
             # The maximum number of contacts per pair is related to the maximum number of contact manifold vertices.
-            # MuJoCo sets this to 50, assuming that a face on the input polyhedron has more than 3 vertices for
-            # robustness. Therefore, for compatibility with MuJoCo, we set the maximum number of contacts per pair
-            # to 50, even if it requires more memory than necessary for most cases.
-            self.max_contacts_per_pair = 50
-            self.max_contact_polygon_verts = 150
+            # MuJoCo sets [max_contacts_per_pair] to 50 and [max_contact_polygon_verts] to 150, assuming that the faces
+            # could have more than 4 vertices. However, we set them to smaller values, because we do not expect the
+            # faces to have more than 4 vertices in most cases, and we want to keep the memory usage low.
+            self.max_contacts_per_pair = 8
+            self.max_contact_polygon_verts = 30
 
             # Tolerance for normal alignment between (face-face) or (edge-face). The normals should align within this
             # tolerance to be considered as a valid parallel contact. The values are cosine and sine of 1.6e-3,
@@ -1191,8 +1191,7 @@ class GJK:
             # 1. The face normal should point towards the vertex w
             # 2. The vertex w should be on the other side of the face to the origin
             is_visible = face.normal.dot(w - v) > self.FLOAT_MIN
-            # print("Checking visibility of face", i_f, ":", is_visible, "dist2:", face.dist2, "normal:", face.normal, "w:", w)
-
+            
             # The first face is always considered visible.
             if is_visible or is_first:
                 # If visible, delete the face from the polytope
@@ -1668,14 +1667,14 @@ class GJK:
                 v1, v2 = tri_v3 - ray_v1, tri_v1 - ray_v1
             vols[i] = self.func_det3(v1, v2, ray)
 
-        return True if (vols >= 0).all() or (vols <= 0).all() else False
+        return (vols >= 0).all() or (vols <= 0).all()
 
     @ti.func
     def func_point_triangle_intersection(self, point, tri_v1, tri_v2, tri_v3):
         """
         Check if the point is inside the triangle.
         """
-        flag = False
+        is_inside = False
         # Compute the affine coordinates of the point with respect to the triangle
         _lambda = self.func_triangle_affine_coords(point, tri_v1, tri_v2, tri_v3)
 
@@ -1684,9 +1683,9 @@ class GJK:
             # Check if the point predicted by the affine coordinates is equal to the point itself
             pred = tri_v1 * _lambda[0] + tri_v2 * _lambda[1] + tri_v3 * _lambda[2]
             diff = pred - point
-            flag = diff.norm() < self.FLOAT_MIN
+            is_inside = diff.norm_sqr() < self.FLOAT_MIN_SQ
 
-        return flag
+        return is_inside
 
     @ti.func
     def func_triangle_affine_coords(self, point, tri_v1, tri_v2, tri_v3):
@@ -3160,7 +3159,7 @@ class GJK:
         # Check if the new vertex is not very close to the existing vertices
         nverts = self.simplex[i_b].nverts
         for i in range(nverts):
-            if (self.simplex_vertex[i_b, i].mink - mink).norm() < self.simplex_max_degeneracy:
+            if (self.simplex_vertex[i_b, i].mink - mink).norm_sqr() < (self.simplex_max_degeneracy ** 2):
                 is_degenerate = True
                 break
 
@@ -3189,9 +3188,10 @@ class GJK:
 
         This function assumes that every pair of points is non-degenerate, i.e. no pair of points is identical.
         """
-        e1 = (v2 - v1).normalized()
-        e2 = (v3 - v1).normalized()
-        return e1.cross(e2).norm() < self.simplex_max_degeneracy
+        e1 = (v2 - v1)
+        e2 = (v3 - v1)
+        normal = e1.cross(e2)
+        return normal.norm_sqr() < (self.simplex_max_degeneracy ** 2) * e1.norm_sqr() * e2.norm_sqr()
 
     @ti.func
     def func_is_coplanar(self, v1, v2, v3, v4):
@@ -3202,9 +3202,9 @@ class GJK:
         """
         e1 = (v2 - v1).normalized()
         e2 = (v3 - v1).normalized()
-        normal = (e1).cross(e2).normalized()
-        diff = (v4 - v1).normalized()
-        return ti.abs(normal.dot(diff)) < self.simplex_max_degeneracy
+        normal = e1.cross(e2)
+        diff = (v4 - v1)
+        return (normal.dot(diff) ** 2) < (self.simplex_max_degeneracy ** 2) * normal.norm_sqr() * diff.norm_sqr()
 
     @ti.func
     def func_search_valid_simplex_vertex(self, i_ga, i_gb, i_b):
@@ -3272,14 +3272,9 @@ class GJK:
         """
         Count the number of discrete vertices in the geometry.
         """
-        geom_type = self._solver.geoms_info[i_g].type
-        count = 0
-        if geom_type == gs.GEOM_TYPE.BOX:
-            count = 8
-        elif geom_type == gs.GEOM_TYPE.MESH:
-            vert_start = self._solver.geoms_info.vert_start[i_g]
-            vert_end = self._solver.geoms_info.vert_end[i_g]
-            count = vert_end - vert_start
+        vert_start = self._solver.geoms_info.vert_start[i_g]
+        vert_end = self._solver.geoms_info.vert_end[i_g]
+        count = vert_end - vert_start
         return count
 
     @ti.func
@@ -3293,6 +3288,8 @@ class GJK:
         # Get the vertex position in the local frame of the geometry.
         v = ti.Vector([0.0, 0.0, 0.0], dt=gs.ti_float)
         if geom_type == gs.GEOM_TYPE.BOX:
+            # For the consistency with the [func_support_box] function of [SupportField] class, we handle the box
+            # vertex positions in a different way than the general mesh.
             v = ti.Vector(
                 [
                     (1.0 if (i_v & 1 == 1) else -1.0) * self._solver.geoms_info[i_g].data[0] * 0.5,
@@ -3328,7 +3325,7 @@ class GJK:
         normal = (vertex_3 - vertex_1).cross(vertex_2 - vertex_1).normalized()
 
         # Reorient the normal to point outward from the simplex
-        if normal.dot(apex_vertex - vertex_1) > 0:
+        if normal.dot(apex_vertex - vertex_1) > 0.0:
             normal = -normal
 
         # Compute the signed distance from the origin to the triangle plane
@@ -3357,14 +3354,21 @@ class GJK:
         mink = obj1 - obj2
 
         for i in range(9):
-            px, py, pz = gs.ti_float(0.0), gs.ti_float(0.0), gs.ti_float(0.0)
+            # px, py, pz = gs.ti_float(0.0), gs.ti_float(0.0), gs.ti_float(0.0)
+            # if i > 0:
+            #     j = i - 1
+            #     px = -1.0 if (j & 1) == 0 else 1.0
+            #     py = -1.0 if (j & 2) == 0 else 1.0
+            #     pz = -1.0 if (j & 4) == 0 else 1.0
+
+            # n_dir = (dir + (gs.ti_vec3(px, py, pz) * gs.EPS)).normalized()
+            
+            n_dir = dir
             if i > 0:
                 j = i - 1
-                px = -1.0 if (j & 1) == 0 else 1.0
-                py = -1.0 if (j & 2) == 0 else 1.0
-                pz = -1.0 if (j & 4) == 0 else 1.0
-
-            n_dir = (dir + (gs.ti_vec3(px, py, pz) * gs.EPS)).normalized()
+                n_dir[0] += -gs.EPS if (j & 1) == 0 else gs.EPS
+                n_dir[1] += -gs.EPS if (j & 2) == 0 else gs.EPS
+                n_dir[2] += -gs.EPS if (j & 4) == 0 else gs.EPS
 
             num_supports = self.func_count_support(i_ga, i_gb, i_b, n_dir)
             if i > 0 and num_supports > 1:
@@ -3404,7 +3408,7 @@ class GJK:
             if self.func_is_new_simplex_vertex_valid(i_b, id1, id2, mink):
                 break
 
-        return (obj1, obj2, id1, id2, mink)
+        return obj1, obj2, id1, id2, mink
 
     @ti.func
     def count_support_driver(self, d, i_g, i_b):
@@ -3596,11 +3600,11 @@ class GJK:
             else:
                 # Failed to compute witness points, so the objects are not colliding
                 self.n_witness[i_b] = 0
-                self.distance[i_b] = 0
+                self.distance[i_b] = 0.0
         else:
             # No face found, so the objects are not colliding
             self.n_witness[i_b] = 0
-            self.distance[i_b] = 0
+            self.distance[i_b] = 0.0
 
         return nearest_i_f
 
@@ -3618,18 +3622,8 @@ class GJK:
         face_v3 = self.polytope_verts[i_b, face.verts_idx[2]].mink
 
         # Project origin onto the face plane to get the barycentric coordinates
-        proj_o, _ = self.func_project_origin_to_plane(
-            face_v1,
-            face_v2,
-            face_v3,
-        )
-
-        _lambda = self.func_triangle_affine_coords(
-            proj_o,
-            face_v1,
-            face_v2,
-            face_v3,
-        )
+        proj_o, _ = self.func_project_origin_to_plane(face_v1, face_v2, face_v3)
+        _lambda = self.func_triangle_affine_coords(proj_o, face_v1, face_v2, face_v3)
 
         # Check validity of affine coordinates through reprojection
         v1 = self.polytope_verts[i_b, face.verts_idx[0]].mink
@@ -3640,12 +3634,8 @@ class GJK:
         reprojection_error = (proj_o - proj_o_lambda).norm()
 
         # Take into account the face magnitude, as the error is relative to the face size.
-        max_edge_len = max(
-            (v1 - v2).norm(),
-            (v2 - v3).norm(),
-            (v3 - v1).norm(),
-        )
-        rel_reprojection_error = reprojection_error / (max_edge_len + gs.EPS)
+        max_edge_len_inv = ti.rsqrt(max((v1 - v2).norm_sqr(), (v2 - v3).norm_sqr(), (v3 - v1).norm_sqr(), self.FLOAT_MIN_SQ))
+        rel_reprojection_error = reprojection_error * max_edge_len_inv
         if rel_reprojection_error > self.polytope_max_reprojection_error:
             flag = RETURN_CODE.FAIL
 
@@ -3743,7 +3733,7 @@ class GJK:
             ) / 3.0
 
             # Use origin for initialization
-            max_orient = normal.dot(-face_center)
+            max_orient = -normal.dot(face_center)
             max_abs_orient = ti.abs(max_orient)
 
             # Consider other vertices in the polytope to reorient the normal
@@ -3756,7 +3746,7 @@ class GJK:
                         max_abs_orient = ti.abs(orient)
                         max_orient = orient
 
-            if max_orient > 0:
+            if max_orient > 0.0:
                 normal = -normal
 
             self.polytope_faces[i_b, n].normal = normal
@@ -3766,7 +3756,7 @@ class GJK:
             # vertices, because the face normal could be unstable, which ends up in significantly different dot product
             # values for different vertices.
             min_dist2 = self.FLOAT_MAX
-            for i in range(3):
+            for i in ti.static(range(3)):
                 i_v = i_v1
                 if i == 1:
                     i_v = i_v2
@@ -3787,35 +3777,33 @@ class GJK:
         """
         Compute the reliable normal of the plane defined by three points.
         """
-        normal, flag = gs.ti_vec3(0, 0, 0), RETURN_CODE.SUCCESS
+        normal, flag = gs.ti_vec3(0.0, 0.0, 0.0), RETURN_CODE.FAIL
+        finished = False
 
         d21 = v2 - v1
         d31 = v3 - v1
         d32 = v3 - v2
 
-        for i in range(3):
-            n = gs.ti_vec3(0, 0, 0)
-            if i == 0:
-                # Normal = (v1 - v2) x (v3 - v2)
-                n = d32.cross(d21)
-            elif i == 1:
-                # Normal = (v2 - v1) x (v3 - v1)
-                n = d21.cross(d31)
-            else:
-                # Normal = (v1 - v3) x (v2 - v3)
-                n = d31.cross(d32)
-            nn = n.norm()
-            if nn == 0:
-                # Zero normal, cannot project.
-                flag = RETURN_CODE.FAIL
-                break
-            elif nn > self.FLOAT_MIN:
-                normal = n.normalized()
-                flag = RETURN_CODE.SUCCESS
-                break
-            else:
-                if i == 2:
-                    # If we reach here, all normals were unreliable.
+        for i in ti.static(range(3)):
+            if not finished:
+                n = gs.ti_vec3(0.0, 0.0, 0.0)
+                if i == 0:
+                    # Normal = (v1 - v2) x (v3 - v2)
+                    n = d32.cross(d21)
+                elif i == 1:
+                    # Normal = (v2 - v1) x (v3 - v1)
+                    n = d21.cross(d31)
+                else:
+                    # Normal = (v1 - v3) x (v2 - v3)
+                    n = d31.cross(d32)
+                nn = n.norm()
+                if nn == 0:
+                    # Zero normal, cannot project.
                     flag = RETURN_CODE.FAIL
+                    finished = True
+                elif nn > self.FLOAT_MIN:
+                    normal = n.normalized()
+                    flag = RETURN_CODE.SUCCESS
+                    finished = True
 
         return normal, flag
