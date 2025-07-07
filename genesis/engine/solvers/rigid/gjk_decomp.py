@@ -276,6 +276,8 @@ class GJK:
         # If the objects are intersecting, the distance is negative (depth).
         self.distance = ti.field(dtype=gs.ti_float, shape=(self._B,))
 
+        self.turn_on_error = rigid_solver.gjk_error
+
     @ti.func
     def clear_cache(self, i_b):
         """
@@ -430,8 +432,13 @@ class GJK:
 
         self.n_contacts[i_b] = n_contacts
         # If there are no contacts, we set the penetration and is_col to 0.
-        self.is_col[i_b] = 0 if n_contacts == 0 else self.is_col[i_b]
-        self.penetration[i_b] = 0.0 if n_contacts == 0 else self.penetration[i_b]
+        if ti.static(self.turn_on_error):
+            if n_contacts == 0:
+                self.is_col[i_b] = 0
+                self.penetration[i_b] = 0.0
+        else:
+            self.is_col[i_b] = 0 if n_contacts == 0 else self.is_col[i_b]
+            self.penetration[i_b] = 0.0 if n_contacts == 0 else self.penetration[i_b]
 
     @ti.func
     def func_gjk(self, i_ga, i_gb, i_b, shrink_sphere):

@@ -281,6 +281,7 @@ class RigidOptions(Options):
 
     # GJK collision detection
     use_gjk_collision: bool = False
+    gjk_error: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)

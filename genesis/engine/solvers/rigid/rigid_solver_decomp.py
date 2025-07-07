@@ -87,6 +87,8 @@ class RigidSolver(Solver):
         self._integrator = options.integrator
         self._box_box_detection = options.box_box_detection
 
+        self.gjk_error = options.gjk_error
+
         self._use_contact_island = options.use_contact_island
         self._use_hibernation = options.use_hibernation and options.use_contact_island
         if options.use_hibernation and not options.use_contact_island:
