@@ -17,12 +17,6 @@ object_type = args.object
 gs.init(backend=gs.cpu, precision="32")
 
 scene = gs.Scene(
-    viewer_options=gs.options.ViewerOptions(
-        camera_pos=(20, -20, 20),
-        camera_lookat=(0.0, 0.0, 5.0),
-        camera_fov=30,
-        max_FPS=60,
-    ),
     sim_options=gs.options.SimOptions(
         dt=0.005,
     ),
@@ -31,6 +25,12 @@ scene = gs.Scene(
         max_collision_pairs=2000,
         use_gjk_collision=True,
         enable_mujoco_compatibility=False,
+    ),
+    viewer_options=gs.options.ViewerOptions(
+        camera_pos=(20, -20, 20),
+        camera_lookat=(0.0, 0.0, 5.0),
+        camera_fov=30,
+        max_FPS=60,
     ),
     show_viewer=True,
 )

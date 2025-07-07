@@ -131,8 +131,9 @@ class GJK:
 
         # In safe GJK, we do not allow degenerate simplex to happen, because it becomes the main reason of EPA errors.
         # To prevent degeneracy, we throw away the simplex that has smaller degeneracy measure (e.g. colinearity,
-        # coplanarity) than this threshold.
-        self.simplex_max_degeneracy = gs.np_float(1e-5)
+        # coplanarity) than this threshold. This value has been experimentally determined based on the examples that
+        # we currently have (e.g. pyramid, tower, ...), but it could be further tuned based on the future examples.
+        self.simplex_max_degeneracy_sq = gs.np_float(1e-5) ** 2
 
         # In safe GJK, if the initial simplex is degenerate and the geometries are discrete, we go through vertices
         # on the Minkowski difference to find a vertex that would make a valid simplex. To prevent iterating through
@@ -191,7 +192,10 @@ class GJK:
         # witness points, we project the origin onto the polytope faces and compute the barycentric coordinates of the
         # projected point. To confirm the projection is valid, we compute the projected point using the barycentric
         # coordinates and compare it with the original projected point. If the difference is larger than this threshold,
-        # we consider the projection invalid, because it means numerical errors are too large.
+        # we consider the projection invalid, because it means numerical errors are too large. This value has been 
+        # experimentally determined based on the examples that we currently have (e.g. pyramid, tower, ...). We observed
+        # the error usually reaches around 5e-4, so we set the threshold to 1e-5 to be safe. However, this value could
+        # be further tuned based on the future examples.
         self.polytope_max_reprojection_error = gs.np_float(1e-5)
 
         ### Multi-contect detection from MuJoCo based on contact manifold detection algorithm.
@@ -209,6 +213,9 @@ class GJK:
             # Tolerance for normal alignment between (face-face) or (edge-face). The normals should align within this
             # tolerance to be considered as a valid parallel contact. The values are cosine and sine of 1.6e-3,
             # respectively, and brought from MuJoCo's implementation. Also keep them for compatibility with MuJoCo.
+            # Increasing this value could be useful for detecting contact manifolds even when the normals are not
+            # perfectly aligned, but we observed that it leads to more false positives and thus not a perfect solution
+            # for the multi-contact detection.
             self.contact_face_tol = 0.99999872
             self.contact_edge_tol = 0.00159999931
 
@@ -1667,7 +1674,7 @@ class GJK:
                 v1, v2 = tri_v3 - ray_v1, tri_v1 - ray_v1
             vols[i] = self.func_det3(v1, v2, ray)
 
-        return (vols >= 0).all() or (vols <= 0).all()
+        return (vols >= 0.0).all() or (vols <= 0.0).all()
 
     @ti.func
     def func_point_triangle_intersection(self, point, tri_v1, tri_v2, tri_v3):
@@ -3008,18 +3015,12 @@ class GJK:
         Montaut, Louis, et al. "Collision detection accelerated: An optimization perspective."
         https://arxiv.org/abs/2205.09663
         """
-        dir0 = gs.ti_vec3(0, 0, 1)
-        dir1 = gs.ti_vec3(0, 1, 0)
-
         # Compute the initial tetrahedron using two random directions
         init_flag = RETURN_CODE.SUCCESS
         self.simplex[i_b].nverts = 0
         for i in range(4):
-            dir = gs.ti_vec3(0.0, 0.0, 0.0)
-            if i // 2 == 0:
-                dir = dir0 if i % 2 == 0 else -dir0
-            else:
-                dir = dir1 if i % 2 == 0 else -dir1
+            dir = ti.Vector.zero(gs.ti_float, 3)
+            dir[2 - i // 2] = 1.0 - 2.0 * (i % 2)
 
             obj1, obj2, id1, id2, minkowski = self.func_safe_gjk_support(i_ga, i_gb, i_b, dir)
 
@@ -3100,7 +3101,7 @@ class GJK:
                     break
 
                 # Check if the origin is strictly outside of the Minkowski difference (which means there is no collision)
-                is_no_collision = minkowski.dot(min_normal) < 0
+                is_no_collision = minkowski.dot(min_normal) < 0.0
                 if is_no_collision:
                     gjk_flag = GJK_RETURN_CODE.SEPARATED
                     break
@@ -3159,7 +3160,7 @@ class GJK:
         # Check if the new vertex is not very close to the existing vertices
         nverts = self.simplex[i_b].nverts
         for i in range(nverts):
-            if (self.simplex_vertex[i_b, i].mink - mink).norm_sqr() < (self.simplex_max_degeneracy**2):
+            if (self.simplex_vertex[i_b, i].mink - mink).norm_sqr() < (self.simplex_max_degeneracy_sq):
                 is_degenerate = True
                 break
 
@@ -3191,7 +3192,7 @@ class GJK:
         e1 = v2 - v1
         e2 = v3 - v1
         normal = e1.cross(e2)
-        return normal.norm_sqr() < (self.simplex_max_degeneracy**2) * e1.norm_sqr() * e2.norm_sqr()
+        return normal.norm_sqr() < (self.simplex_max_degeneracy_sq) * e1.norm_sqr() * e2.norm_sqr()
 
     @ti.func
     def func_is_coplanar(self, v1, v2, v3, v4):
@@ -3204,7 +3205,7 @@ class GJK:
         e2 = (v3 - v1).normalized()
         normal = e1.cross(e2)
         diff = v4 - v1
-        return (normal.dot(diff) ** 2) < (self.simplex_max_degeneracy**2) * normal.norm_sqr() * diff.norm_sqr()
+        return (normal.dot(diff) ** 2) < (self.simplex_max_degeneracy_sq) * normal.norm_sqr() * diff.norm_sqr()
 
     @ti.func
     def func_search_valid_simplex_vertex(self, i_ga, i_gb, i_b):
@@ -3347,28 +3348,19 @@ class GJK:
         dir: gs.ti_vec3
             The unit direction in which to find the support points, from [ga] (obj 1) to [gb] (obj 2).
         """
-        obj1 = gs.ti_vec3(0, 0, 0)
-        obj2 = gs.ti_vec3(0, 0, 0)
-        id1 = -1
-        id2 = -1
+        obj1 = gs.ti_vec3(0.0, 0.0, 0.0)
+        obj2 = gs.ti_vec3(0.0, 0.0, 0.0)
+        id1 = gs.ti_int(-1)
+        id2 = gs.ti_int(-1)
         mink = obj1 - obj2
 
         for i in range(9):
-            # px, py, pz = gs.ti_float(0.0), gs.ti_float(0.0), gs.ti_float(0.0)
-            # if i > 0:
-            #     j = i - 1
-            #     px = -1.0 if (j & 1) == 0 else 1.0
-            #     py = -1.0 if (j & 2) == 0 else 1.0
-            #     pz = -1.0 if (j & 4) == 0 else 1.0
-
-            # n_dir = (dir + (gs.ti_vec3(px, py, pz) * gs.EPS)).normalized()
-
             n_dir = dir
             if i > 0:
                 j = i - 1
-                n_dir[0] += -gs.EPS if (j & 1) == 0 else gs.EPS
-                n_dir[1] += -gs.EPS if (j & 2) == 0 else gs.EPS
-                n_dir[2] += -gs.EPS if (j & 4) == 0 else gs.EPS
+                n_dir[0] += -(1.0 - 2.0 * (j & 1)) * gs.EPS
+                n_dir[1] += -(1.0 - 2.0 * (j & 2)) * gs.EPS
+                n_dir[2] += -(1.0 - 2.0 * (j & 4)) * gs.EPS
 
             num_supports = self.func_count_support(i_ga, i_gb, i_b, n_dir)
             if i > 0 and num_supports > 1:
@@ -3424,15 +3416,13 @@ class GJK:
         return count
 
     @ti.func
-    def func_count_support(self, i_ga, i_gb, i_b, d):
+    def func_count_support(self, i_ga, i_gb, i_b, dir):
         """
         Count the number of possible pairs of support points on the two objects in the given direction [d].
         """
         count = 1
         for i in range(2):
-            dir = d if i == 0 else -d
-            i_g = i_ga if i == 0 else i_gb
-            count *= self.count_support_driver(dir, i_g, i_b)
+            count *= self.count_support_driver(dir if i == 0 else -dir, i_ga if i == 0 else i_gb, i_b)
 
         return count
 
@@ -3450,12 +3440,12 @@ class GJK:
         """
         upper = self.FLOAT_MAX
         upper2 = self.FLOAT_MAX_SQ
-        lower = 0.0
+        lower = gs.ti_float(0.0)
         tolerance = self.tolerance
 
         # Index of the nearest face
-        nearest_i_f = -1
-        prev_nearest_i_f = -1
+        nearest_i_f = gs.ti_int(-1)
+        prev_nearest_i_f = gs.ti_int(-1)
 
         discrete = self.func_is_discrete_geoms(i_ga, i_gb, i_b)
         if discrete:
@@ -3477,7 +3467,7 @@ class GJK:
                     lower2 = face_dist2
                     nearest_i_f = i_f
 
-            if lower2 > upper2 or nearest_i_f < 0:
+            if lower2 > upper2 or nearest_i_f == -1:
                 # Invalid face found, stop the algorithm (lower bound of depth is larger than upper bound)
                 nearest_i_f = prev_nearest_i_f
                 break

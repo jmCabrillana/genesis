@@ -19,12 +19,6 @@ backend = gs.cpu if cpu else gs.gpu
 gs.init(backend=backend, precision="32")
 
 scene = gs.Scene(
-    viewer_options=gs.options.ViewerOptions(
-        camera_pos=(0, -5.5, 2.5),
-        camera_lookat=(0, 0.0, 1.5),
-        camera_fov=30,
-        max_FPS=60,
-    ),
     sim_options=gs.options.SimOptions(
         dt=0.01,
     ),
@@ -34,7 +28,13 @@ scene = gs.Scene(
         use_gjk_collision=True,
         enable_mujoco_compatibility=False,
     ),
-    show_viewer=True,
+    viewer_options=gs.options.ViewerOptions(
+        camera_pos=(0, -5.5, 2.5),
+        camera_lookat=(0, 0.0, 1.5),
+        camera_fov=30,
+        max_FPS=60,
+    ),
+    show_viewer=False,
 )
 
 plane = scene.add_entity(gs.morphs.Plane(pos=(0, 0, 0)))
