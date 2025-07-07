@@ -88,6 +88,17 @@ elif object_type == "cylinder":
         ),
     )
 
+cam = scene.add_camera(
+    pos=(20, -20, 20),
+    lookat=(0.0, 0.0, 5.0),
+    fov=30,
+    res=(1280, 960),
+    GUI=False,
+)
+
 scene.build()
-for i in range(5000):
+cam.start_recording()
+for i in range(700):
     scene.step()
+    cam.render()
+cam.stop_recording(f"tower_error_{args.error}.mp4")
