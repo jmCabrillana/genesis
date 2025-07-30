@@ -451,6 +451,62 @@ class Collider:
 
         return contacts_info.copy()
 
+    def compute_distance(self, i_ga, i_gb, i_b):
+        kernel_compute_distance(
+            self._solver.geoms_state,
+            self._solver.geoms_info,
+            self._solver.verts_info,
+            self._solver._static_rigid_sim_config,
+            self._collider_state,
+            self._collider_static_config,
+            self._gjk._gjk_state,
+            self._gjk._gjk_static_config,
+            self._support_field._support_field_info,
+            self._support_field._support_field_static_config,
+            i_ga,
+            i_gb,
+        )
+        # Get distance and witness points
+        dist = self._gjk._gjk_state.distance[i_b]
+        w1 = self._gjk._gjk_state.witness.point_obj1[i_b, 0]
+        w2 = self._gjk._gjk_state.witness.point_obj2[i_b, 0]
+        return dist, w1, w2
+
+
+@ti.kernel
+def kernel_compute_distance(
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    verts_info: array_class.VertsInfo,
+    static_rigid_sim_config: ti.template(),
+    collider_state: array_class.ColliderState,
+    collider_static_config: ti.template(),
+    gjk_state: array_class.GJKState,
+    gjk_static_config: ti.template(),
+    support_field_info: array_class.SupportFieldInfo,
+    support_field_static_config: ti.template(),
+    i_ga: ti.int32,
+    i_gb: ti.int32,
+):
+    _B = gjk_state.distance.shape[0]
+    for i_b in range(_B):
+        gjk.func_gjk(
+            geoms_state,
+            geoms_info,
+            verts_info,
+            static_rigid_sim_config,
+            collider_state,
+            collider_static_config,
+            gjk_state,
+            gjk_static_config,
+            support_field_info,
+            support_field_static_config,
+            i_ga,
+            i_gb,
+            i_b,
+            False,
+        )
+
 
 @ti.func
 def rotaxis(vecin, i0, i1, i2, f0, f1, f2):

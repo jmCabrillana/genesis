@@ -471,7 +471,7 @@ def func_gjk(
     # Lambda for barycentric coordinates
     _lambda = gs.ti_vec4(1.0, 0.0, 0.0, 0.0)
     # Whether or not we need to compute the exact distance.
-    get_dist = shrink_sphere
+    get_dist = True
     # We can use GJK intersection algorithm only for collision detection if we do not have to compute the distance.
     backup_gjk = not get_dist
     # Support vector to compute the next support point.
