@@ -530,6 +530,8 @@ class StructMDVertex:
     obj2: V_ANNOTATION
     id1: V_ANNOTATION
     id2: V_ANNOTATION
+    localpos1: V_ANNOTATION
+    localpos2: V_ANNOTATION
     mink: V_ANNOTATION
 
 
@@ -540,6 +542,8 @@ def get_gjk_simplex_vertex(solver):
         "obj2": V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
         "id1": V(dtype=gs.ti_int, shape=(_B, 4)),
         "id2": V(dtype=gs.ti_int, shape=(_B, 4)),
+        "localpos1": V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
+        "localpos2": V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
         "mink": V_VEC(3, dtype=gs.ti_float, shape=(_B, 4)),
     }
 
@@ -564,6 +568,8 @@ def get_epa_polytope_vertex(solver, gjk_static_config):
         "obj2": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
         "id1": V(dtype=gs.ti_int, shape=(_B, max_num_polytope_verts)),
         "id2": V(dtype=gs.ti_int, shape=(_B, max_num_polytope_verts)),
+        "localpos1": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
+        "localpos2": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
         "mink": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_num_polytope_verts)),
     }
 
@@ -672,6 +678,16 @@ class StructEPAPolytopeFace:
     dist2: V_ANNOTATION
     map_idx: V_ANNOTATION
 
+    # Differentiable contact
+    default_info_valid: V_ANNOTATION
+    default_dist: V_ANNOTATION
+    default_normal: V_ANNOTATION
+    default_boundary_sdist: V_ANNOTATION
+    default_boundary_sdist_vert_localpos1: V_ANNOTATION
+    default_boundary_sdist_vert_localpos2: V_ANNOTATION
+    default_projection_affine_coords: V_ANNOTATION
+    perturb_boundary_sdist: V_ANNOTATION
+    visited: V_ANNOTATION
 
 def get_epa_polytope_face(solver, polytope_max_faces):
     _B = solver._B
@@ -682,8 +698,18 @@ def get_epa_polytope_face(solver, polytope_max_faces):
         "normal": V_VEC(3, dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
         "dist2": V(dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
         "map_idx": V(dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
+    
+        # Contact info in the default configuration for differentiability.
+        "default_info_valid": V(dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
+        "default_dist": V(dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
+        "default_normal": V_VEC(3, dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
+        "default_boundary_sdist": V(dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
+        "default_boundary_sdist_vert_localpos1": V_VEC(3, dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
+        "default_boundary_sdist_vert_localpos2": V_VEC(3, dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
+        "default_projection_affine_coords": V_VEC(3, dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
+        "perturb_boundary_sdist": V(dtype=gs.ti_float, shape=(_B, polytope_max_faces)),
+        "visited": V(dtype=gs.ti_int, shape=(_B, polytope_max_faces)),
     }
-
     if use_ndarray:
         return StructEPAPolytopeFace(**kwargs)
     else:
@@ -934,6 +960,38 @@ def get_gjk_state(solver, static_rigid_sim_config, gjk_static_config):
         }
     )
 
+    ### Differentiable contact
+    kwargs.update(
+        {
+            "diff_faces_vert_localpos1": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair, 3)),
+            "diff_faces_vert_localpos2": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair, 3)),
+            "diff_faces_vert_id1": V_VEC(3, dtype=gs.ti_int, shape=(_B, max_contacts_per_pair)),
+            "diff_faces_vert_id2": V_VEC(3, dtype=gs.ti_int, shape=(_B, max_contacts_per_pair)),
+            "diff_faces_normal": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair)),
+            "diff_faces_boundary_sdist_vert_localpos1": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair)),
+            "diff_faces_boundary_sdist_vert_localpos2": V_VEC(3, dtype=gs.ti_float, shape=(_B, max_contacts_per_pair)),
+            "num_diff_faces": V(dtype=gs.ti_int, shape=(_B,)),
+
+            # Values that we would get from default EPA
+            "default_epa_penetration": V(dtype=gs.ti_float, shape=(_B,)),
+            "default_epa_normal": V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+            "default_epa_contact_pos": V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+            "default_epa_success": V(dtype=gs.ti_int, shape=(_B,)),
+
+            # Default configurations
+            "default_pos1": V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+            "default_quat1": V_VEC(4, dtype=gs.ti_float, shape=(_B,)),
+            "default_pos2": V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+            "default_quat2": V_VEC(4, dtype=gs.ti_float, shape=(_B,)),
+
+            # Perturbed configurations
+            "perturbed_pos1": V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+            "perturbed_quat1": V_VEC(4, dtype=gs.ti_float, shape=(_B,)),
+            "perturbed_pos2": V_VEC(3, dtype=gs.ti_float, shape=(_B,)),
+            "perturbed_quat2": V_VEC(4, dtype=gs.ti_float, shape=(_B,)),
+        }
+    )
+
     ### Final results
     witness = get_witness(solver, max_contacts_per_pair)
 
@@ -947,6 +1005,8 @@ def get_gjk_state(solver, static_rigid_sim_config, gjk_static_config):
             "is_col": V(dtype=gs.ti_int, shape=(_B,)),
             "penetration": V(dtype=gs.ti_float, shape=(_B,)),
             "distance": V(dtype=gs.ti_float, shape=(_B,)),
+
+            "diff_penetration": V(dtype=gs.ti_float, shape=(_B, max_contacts_per_pair)),
         }
     )
 

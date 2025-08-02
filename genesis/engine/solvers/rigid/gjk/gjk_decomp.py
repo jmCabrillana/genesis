@@ -4,7 +4,6 @@ import genesis as gs
 import genesis.utils.geom as gu
 import genesis.utils.array_class as array_class
 import genesis.engine.solvers.rigid.support_field_decomp as support_field
-from dataclasses import dataclass
 
 
 class RETURN_CODE(IntEnum):
@@ -60,6 +59,12 @@ class GJK:
         gjk_max_iterations = 50
         epa_max_iterations = 50
         polytope_max_faces = 6 * epa_max_iterations
+        enable_diff_contact = rigid_solver._options.use_diff_contact
+
+        if enable_diff_contact:
+            max_contacts_per_pair = 50
+        else:
+            max_contacts_per_pair = 1
 
         self._gjk_static_config = GJK.GJKStaticConfig(
             # The maximum number of contacts per pair is related to the maximum number of contact manifold vertices.
@@ -67,7 +72,7 @@ class GJK:
             # multi-contact detection algorithm, assuming that the faces could have more than 4 vertices. However, we
             # set them to smaller values, because we do not expect the faces to have more than 4 vertices in most cases,
             # and we want to keep the memory usage low.
-            max_contacts_per_pair=8 if enable_mujoco_multi_contact else 1,
+            max_contacts_per_pair=max_contacts_per_pair,  # 8 if enable_mujoco_multi_contact else 1,
             max_contact_polygon_verts=30 if enable_mujoco_multi_contact else 1,
             # Maximum number of iterations for GJK and EPA algorithms
             gjk_max_iterations=gjk_max_iterations,
@@ -110,6 +115,15 @@ class GJK:
             # for the multi-contact detection.
             contact_face_tol=gs.np_float(0.99999872),
             contact_edge_tol=gs.np_float(0.00159999931),
+            # Whether to use differentiable contact. If True, the (possibly) multiple contact points are computed using
+            # differentiable EPA algorithm. The penetration depth is also computed in a differentiable way.
+            enable_diff_contact=enable_diff_contact,
+            # Epsilon values for differentiable contact.
+            diff_contact_eps_B=gs.np_float(1e-2),
+            diff_contact_eps_D=gs.np_float(1e-2),
+            diff_contact_eps_A=gs.np_float(1e-2),
+            diff_contact_max_support_verts=10,
+            diff_contact_orient_eps=gs.np_float(1e-4),
         )
 
         # Initialize GJK state.
@@ -183,6 +197,7 @@ def func_gjk_contact(
     MuJoCo's implementation:
     https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
     """
+    # print(f"Running GJK-EPA for {i_ga} and {i_gb}")
     # Clear the cache to prepare for this GJK-EPA run.
     clear_cache(gjk_state, i_b)
 
@@ -4361,6 +4376,7 @@ def func_safe_epa(
 
     k_max = gjk_static_config.epa_max_iterations
     for k in range(k_max):
+        # print(f"EPA iteration: {k}")
         prev_nearest_i_f = nearest_i_f
 
         # Find the polytope face with the smallest distance to the origin

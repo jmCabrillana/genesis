@@ -393,3 +393,76 @@ def _func_count_supports_box(
     d_box = gu.ti_inv_transform_by_quat(d, g_quat)
 
     return 2 ** (d_box == 0.0).cast(gs.ti_int).sum()
+
+
+'''
+=============================================== Support functions for differentiable contact
+'''
+
+@ti.func
+def _func_diff_support_world(
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    support_field_info: array_class.SupportFieldInfo,
+    support_field_static_config: ti.template(),
+    d,
+    i_g,
+    i_b,
+):
+    """
+    support position for a world direction
+    """
+
+    g_pos = geoms_state.pos[i_g, i_b]
+    g_quat = geoms_state.quat[i_g, i_b]
+    d_mesh = gu.ti_transform_by_quat(d, gu.ti_inv_quat(g_quat))
+    v_, vid = _func_support_mesh(support_field_info, support_field_static_config, d_mesh, i_g)
+    v = gu.ti_transform_by_trans_quat(v_, g_pos, g_quat)
+    return v, v_, vid
+
+
+@ti.func
+def _func_diff_support_sphere(
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    d,
+    i_g,
+    i_b,
+):
+    sphere_center = geoms_state.pos[i_g, i_b]
+    sphere_radius = geoms_info.data[i_g][0]
+
+    g_quat = geoms_state.quat[i_g, i_b]
+    local_dir = gu.ti_inv_transform_by_quat(d, g_quat)
+
+    v_ = local_dir * sphere_radius
+    v = sphere_center + d * sphere_radius
+    vid = -1
+
+    return v, v_, vid
+
+
+@ti.func
+def _func_diff_support_box(
+    geoms_state: array_class.GeomsState,
+    geoms_info: array_class.GeomsInfo,
+    d,
+    i_g,
+    i_b,
+):
+    g_pos = geoms_state.pos[i_g, i_b]
+    g_quat = geoms_state.quat[i_g, i_b]
+    local_dir = gu.ti_inv_transform_by_quat(d, g_quat)
+
+    v_ = ti.Vector(
+        [
+            (-1.0 if local_dir[0] < 0.0 else 1.0) * geoms_info.data[i_g][0] * 0.5,
+            (-1.0 if local_dir[1] < 0.0 else 1.0) * geoms_info.data[i_g][1] * 0.5,
+            (-1.0 if local_dir[2] < 0.0 else 1.0) * geoms_info.data[i_g][2] * 0.5,
+        ],
+        dt=gs.ti_float,
+    )
+    vid = (v_[0] > 0.0) * 1 + (v_[1] > 0.0) * 2 + (v_[2] > 0.0) * 4
+    vid += geoms_info.vert_start[i_g]
+    v = gu.ti_transform_by_trans_quat(v_, g_pos, g_quat)
+    return v, v_, vid

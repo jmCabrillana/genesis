@@ -13,14 +13,15 @@ import genesis.utils.geom as gu
 from genesis.styles import colors, formats
 from genesis.utils.misc import ti_field_to_torch
 import genesis.utils.array_class as array_class
-import genesis.engine.solvers.rigid.gjk_decomp as gjk
+import genesis.engine.solvers.rigid.gjk.gjk_decomp as gjk
+import genesis.engine.solvers.rigid.gjk.dgjk_decomp as dgjk
 import genesis.engine.solvers.rigid.mpr_decomp as mpr
 import genesis.utils.sdf_decomp as sdf
 import genesis.engine.solvers.rigid.support_field_decomp as support_field
 import genesis.engine.solvers.rigid.rigid_solver_decomp as rigid_solver
 
 from .mpr_decomp import MPR
-from .gjk_decomp import GJK
+from .gjk.gjk_decomp import GJK
 from ....utils.sdf_decomp import SDF
 from .support_field_decomp import SupportField
 
@@ -72,11 +73,19 @@ class Collider:
                 ccd_algorithm = CCD_ALGORITHM_CODE.MJ_GJK
             else:
                 ccd_algorithm = CCD_ALGORITHM_CODE.GJK
+
         else:
             if self._solver._enable_mujoco_compatibility:
                 ccd_algorithm = CCD_ALGORITHM_CODE.MJ_MPR
             else:
                 ccd_algorithm = CCD_ALGORITHM_CODE.MPR
+
+        if self._solver._options.use_diff_contact:
+            ccd_algorithm = CCD_ALGORITHM_CODE.GJK
+            n_contacts_per_pair = 50
+        else:
+            n_contacts_per_pair = 5
+                
 
         # Initialize the static config
         self._collider_static_config = Collider.ColliderStaticConfig(
@@ -92,7 +101,7 @@ class Collider:
             # multiplier k for the maximum number of contact pairs for the broad phase
             max_collision_pairs_broad_k=20,
             # maximum number of contact pairs per collision pair
-            n_contacts_per_pair=5,
+            n_contacts_per_pair=n_contacts_per_pair,
             # maximum number of contact points for box-box collision detection
             box_MAXCONPAIR=16,
             # ccd algorithm
@@ -188,8 +197,8 @@ class Collider:
                     continue
 
                 # pair of fixed links wrt the world
-                if links_is_fixed[i_la] and links_is_fixed[i_lb]:
-                    continue
+                # if links_is_fixed[i_la] and links_is_fixed[i_lb]:
+                #     continue
 
                 collision_pair_validity[i_ga, i_gb] = 1
                 n_possible_pairs += 1
@@ -1809,6 +1818,7 @@ def func_add_contact(
     collider_state: array_class.ColliderState,
     collider_info: array_class.ColliderInfo,
 ):
+    print("Adding contact: ", i_ga, i_gb, i_b, "normal: ", normal, "contact_pos: ", contact_pos, "penetration: ", penetration)
     i_c = collider_state.n_contacts[i_b]
     if i_c == collider_info._max_contact_pairs[None]:
         # FIXME: 'ti.static_print' cannot be used as it will be printed systematically, completely ignoring guard
@@ -2081,36 +2091,56 @@ def func_convex_convex_contact(
                     elif ti.static(
                         collider_static_config.ccd_algorithm in (CCD_ALGORITHM_CODE.GJK, CCD_ALGORITHM_CODE.MJ_GJK)
                     ):
-                        gjk.func_gjk_contact(
-                            geoms_state,
-                            geoms_info,
-                            verts_info,
-                            faces_info,
-                            static_rigid_sim_config,
-                            collider_state,
-                            collider_static_config,
-                            gjk_state,
-                            gjk_static_config,
-                            support_field_info,
-                            support_field_static_config,
-                            i_ga,
-                            i_gb,
-                            i_b,
-                        )
+                        if gjk_static_config.enable_diff_contact:
+                            dgjk.func_gjk_contact(
+                                links_state,
+                                links_info,
+                                geoms_state,
+                                geoms_info,
+                                geoms_init_AABB,
+                                verts_info,
+                                faces_info,
+                                static_rigid_sim_config,
+                                collider_state,
+                                collider_static_config,
+                                gjk_state,
+                                gjk_static_config,
+                                support_field_info,
+                                support_field_static_config,
+                                i_ga,
+                                i_gb,
+                                i_b,
+                            )
+                        else:
+                            gjk.func_gjk_contact(
+                                geoms_state,
+                                geoms_info,
+                                verts_info,
+                                faces_info,
+                                static_rigid_sim_config,
+                                collider_state,
+                                collider_static_config,
+                                gjk_state,
+                                gjk_static_config,
+                                support_field_info,
+                                support_field_static_config,
+                                i_ga,
+                                i_gb,
+                                i_b,
+                            )
 
                         is_col = gjk_state.is_col[i_b] == 1
-                        penetration = gjk_state.penetration[i_b]
-                        n_contacts = gjk_state.n_contacts[i_b]
-
                         if is_col:
                             if gjk_state.multi_contact_flag[i_b]:
                                 # Used MuJoCo's multi-contact algorithm to find multiple contact points. Therefore,
                                 # add the discovered contact points and stop multi-contact search.
+                                n_contacts = gjk_state.n_contacts[i_b]
                                 for i_c in range(n_contacts):
                                     # Ignore contact points if the number of contacts exceeds the limit.
                                     if i_c < ti.static(collider_static_config.n_contacts_per_pair):
                                         contact_pos = gjk_state.contact_pos[i_b, i_c]
                                         normal = gjk_state.normal[i_b, i_c]
+                                        penetration = gjk_state.diff_penetration[i_b, i_c]
                                         func_add_contact(
                                             i_ga,
                                             i_gb,
@@ -2128,6 +2158,7 @@ def func_convex_convex_contact(
                             else:
                                 contact_pos = gjk_state.contact_pos[i_b, 0]
                                 normal = gjk_state.normal[i_b, 0]
+                                penetration = gjk_state.penetration[i_b]
 
                 if ti.static(collider_static_config.ccd_algorithm == CCD_ALGORITHM_CODE.MPR):
                     if try_sdf:

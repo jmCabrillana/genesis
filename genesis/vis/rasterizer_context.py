@@ -854,12 +854,14 @@ class RasterizerContext:
         self.update_link_frame(self.buffer)
         self.update_tool(self.buffer)
         self.update_rigid(self.buffer)
-        self.update_contact(self.buffer)
+        # self.update_contact(self.buffer)
+        self.update_penetration(self.buffer)
         self.update_avatar(self.buffer)
         self.update_mpm(self.buffer)
         self.update_sph(self.buffer)
         self.update_pbd(self.buffer)
         self.update_fem(self.buffer)
+
 
     def add_light(self, light):
         # light direction is light pose's -z frame
@@ -920,3 +922,44 @@ class RasterizerContext:
     @property
     def cameras(self):
         return self.visualizer.cameras
+
+    def update_penetration(self, buffer_updates):
+        if self.sim.rigid_solver.is_active() and any(link.visualize_contact for link in self.sim.rigid_solver.links):
+            # Extract all contact information at once
+            contacts_info = self.sim.rigid_solver.collider.get_contacts(as_tensor=False, to_torch=False)
+
+            # Only visualize contact for the first scene
+            batch_idx = 0
+            if self.sim.rigid_solver.n_envs > 0:
+                contacts_info = {key: value[batch_idx] for key, value in contacts_info.items()}
+
+            # Early return if no contact
+            n_contacts = len(contacts_info["geom_a"])
+            if n_contacts == 0:
+                return
+
+            contact_pos = contacts_info["position"] + self.scene.envs_offset[batch_idx]
+            contact_normal = contacts_info["normal"]
+            contact_penetration = contacts_info["penetration"].reshape((-1, 1))
+
+            w1 = contact_pos - contact_normal * contact_penetration * 0.5
+            w2 = contact_pos + contact_normal * contact_penetration * 0.5
+            
+            print("n_contacts: ", n_contacts)
+            for i_c in range(n_contacts):
+                for link_idx, sign in (
+                    (contacts_info["link_a"][i_c], -1),
+                    (contacts_info["link_b"][i_c], 1),
+                ):
+                    if sign == -1:
+                        pos = w1[i_c]
+                        vec = w2[i_c] - w1[i_c]
+                    else:
+                        pos = w2[i_c]
+                        vec = w1[i_c] - w2[i_c]
+                    if self.sim.rigid_solver.links[link_idx].visualize_contact:
+                        self.draw_debug_arrow(
+                            pos=pos,
+                            vec=vec,
+                            persistent=False
+                        )
