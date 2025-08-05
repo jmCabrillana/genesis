@@ -216,6 +216,7 @@ class ConstraintSolver:
         )
 
     def handle_constraints(self):
+        print("handle_constraints")
         add_equality_constraints(
             links_info=self._solver.links_info,
             links_state=self._solver.links_state,
@@ -1235,6 +1236,22 @@ def func_ls_init(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
 ):
+    """
+    @ Input:
+        constraint_state.search
+        constraint_state.jac
+        constraint_state.Ma
+        constraint_state.gauss
+        constraint_state.efc_D
+        constraint_state.Jaref
+        dofs_state.force
+        rigid_global_info.mass_mat
+    @ Output:
+        constraint_state.mv
+        constraint_state.jv
+        constraint_state.quad_gauss
+        constraint_state.quad
+    """
 
     n_dofs = constraint_state.search.shape[0]
     n_entities = entities_info.dof_start.shape[0]
@@ -1289,6 +1306,18 @@ def func_ls_point_fn(
     alpha,
     constraint_state: array_class.ConstraintState,
 ):
+    """
+    @ Input:
+        constraint_state.quad_gauss
+        constraint_state.quad
+        constraint_state.Jaref
+        constraint_state.jv ----> Non differentiable
+    @ Output:
+        alpha
+        cost
+        deriv_0
+        deriv_1
+    """
     tmp_quad_total0, tmp_quad_total1, tmp_quad_total2 = gs.ti_float(0.0), gs.ti_float(0.0), gs.ti_float(0.0)
     for _i0 in range(1):
         tmp_quad_total0 = constraint_state.quad_gauss[_i0 + 0, i_b]
@@ -1297,6 +1326,7 @@ def func_ls_point_fn(
         for i_c in range(constraint_state.n_constraints[i_b]):
             active = 1
             if i_c >= constraint_state.n_constraints_equality[i_b]:
+                # jv < 0 ---> Non differentiable
                 active = constraint_state.Jaref[i_c, i_b] + alpha * constraint_state.jv[i_c, i_b] < 0
             tmp_quad_total0 += constraint_state.quad[i_c, _i0 + 0, i_b] * active
             tmp_quad_total1 += constraint_state.quad[i_c, _i0 + 1, i_b] * active
@@ -1305,6 +1335,7 @@ def func_ls_point_fn(
     cost = alpha * alpha * tmp_quad_total2 + alpha * tmp_quad_total1 + tmp_quad_total0
 
     deriv_0 = 2 * alpha * tmp_quad_total2 + tmp_quad_total1
+    # Here is also non differentiable
     deriv_1 = 2 * tmp_quad_total2 + gs.EPS * (ti.abs(tmp_quad_total2) < gs.EPS)
 
     constraint_state.ls_its[i_b] = constraint_state.ls_its[i_b] + 1
@@ -1334,6 +1365,15 @@ def func_linesearch(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: ti.template(),
 ):
+    """
+
+    @ Output:
+        constraint_state.gtol
+        constraint_state.ls_its
+        constraint_state.ls_result
+
+        res_alpha: The step size along the search direction
+    """
     n_dofs = constraint_state.search.shape[0]
     ## use adaptive linesearch tolerance
     snorm = gs.ti_float(0.0)
@@ -1353,6 +1393,7 @@ def func_linesearch(
     done = False
 
     if snorm < gs.EPS:
+        # If search direction is zero, return 0
         constraint_state.ls_result[i_b] = 1
         res_alpha = 0.0
     else:
@@ -1671,6 +1712,26 @@ def func_update_constraint(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: ti.template(),
 ):
+    """
+    @ Input:
+        cost
+        Ma
+        qacc
+        dofs_state.force
+        dofs_state.acc_smooth
+        constraint_state.jac
+        constraint_state.Jaref
+        constraint_state.efc_D
+        constraint_state.cost
+        constraint_state.active (Newton only)
+    @ Output:
+        constraint_state.active
+        constraint_state.efc_force
+        constraint_state.qfrc_constraint
+        constraint_state.gauss
+        constraint_state.cost
+        constraint_state.prev_active (Newton only)
+    """
     n_dofs = constraint_state.qfrc_constraint.shape[0]
 
     constraint_state.prev_cost[i_b] = cost[i_b]
@@ -1728,6 +1789,14 @@ def func_update_gradient(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: ti.template(),
 ):
+    """
+    @ Input:
+        constraint_state.Ma
+        dofs_state.force
+        constraint_state.qfrc_constraint
+    @ Output:
+        constraint_state.grad
+    """
     n_dofs = constraint_state.grad.shape[0]
 
     for i_d in range(n_dofs):
@@ -1758,6 +1827,14 @@ def initialize_Jaref(
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: ti.template(),
 ):
+    """
+    @ Input:
+        constraint_state.aref
+        constraint_state.jac
+        qacc
+    @ Output:
+        constraint_state.Jaref
+    """
     _B = constraint_state.jac.shape[2]
     n_dofs = constraint_state.jac.shape[1]
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
@@ -1782,6 +1859,13 @@ def initialize_Ma(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
 ):
+    """
+    @ Input:
+        qacc
+        rigid_global_info.mass_mat
+    @ Output:
+        Ma
+    """
 
     _B = rigid_global_info.mass_mat.shape[2]
     n_entities = entities_info.n_links.shape[0]

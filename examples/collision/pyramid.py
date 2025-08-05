@@ -3,18 +3,18 @@ import genesis as gs
 import argparse
 
 pile_type = "static"
-num_cubes = 5
+num_cubes = 1
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--pile_type", type=str, default=pile_type, choices=["static", "falling"])
-parser.add_argument("--num_cubes", type=int, default=num_cubes, choices=range(5, 11))
-parser.add_argument("--cpu", action="store_true", help="Use CPU backend instead of GPU")
+parser.add_argument("--num_cubes", type=int, default=num_cubes, choices=range(1, 101))
+# parser.add_argument("--cpu", action="store_true", help="Use CPU backend instead of GPU")
 args = parser.parse_args()
 
 pile_type = args.pile_type
 num_cubes = args.num_cubes
-cpu = args.cpu
-backend = gs.cpu if cpu else gs.gpu
+# cpu = args.cpu
+backend = gs.cpu  # if cpu else gs.gpu
 
 gs.init(backend=backend, precision="32")
 
@@ -57,4 +57,5 @@ for i in range(num_cubes):
 scene.build()
 
 for i in range(1000):
+    print("-------------------------------- Step: ", i, "--------------------------------")
     scene.step()
