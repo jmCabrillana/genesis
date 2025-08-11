@@ -6,6 +6,7 @@ import genesis.engine.solvers.rigid.support_field_decomp as support_field
 
 import genesis.engine.solvers.rigid.gjk.gjk_decomp as GJK
 
+
 @ti.func
 def func_gjk_contact(
     links_state: array_class.LinksState,
@@ -37,14 +38,14 @@ def func_gjk_contact(
     MuJoCo's implementation:
     https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
     """
-    print("Running DGJK contact detection: ", i_ga, i_gb, i_b)
+    # print("Running DGJK contact detection: ", i_ga, i_gb, i_b)
     # Clear the cache to prepare for this GJK-EPA run.
     GJK.clear_cache(gjk_state, i_b)
 
     # Backup state before local perturbation
     ga_pos, ga_quat = geoms_state.pos[i_ga, i_b], geoms_state.quat[i_ga, i_b]
     gb_pos, gb_quat = geoms_state.pos[i_gb, i_b], geoms_state.quat[i_gb, i_b]
-    
+
     gjk_state.default_pos1[i_b], gjk_state.default_quat1[i_b] = ga_pos, ga_quat
     gjk_state.default_pos2[i_b], gjk_state.default_quat2[i_b] = gb_pos, gb_quat
 
@@ -58,7 +59,6 @@ def func_gjk_contact(
     axis_0 = ti.Vector.zero(gs.ti_float, 3)
     axis_1 = ti.Vector.zero(gs.ti_float, 3)
 
-
     for i in range(5):
         # First iteration: Detect contact in original configuration.
         # 2,3,4,5: Detect contact in perturbed configuration. This is required to sample subfaces in Minkowski difference.
@@ -71,10 +71,16 @@ def func_gjk_contact(
             func_rotate_frame(i_ga, contact_pos, qrot, i_b, geoms_state, geoms_info)
             func_rotate_frame(i_gb, contact_pos, gu.ti_inv_quat(qrot), i_b, geoms_state, geoms_info)
 
-            gjk_state.perturbed_pos1[i_b], gjk_state.perturbed_quat1[i_b] = geoms_state.pos[i_ga, i_b], geoms_state.quat[i_ga, i_b]
-            gjk_state.perturbed_pos2[i_b], gjk_state.perturbed_quat2[i_b] = geoms_state.pos[i_gb, i_b], geoms_state.quat[i_gb, i_b]
+            gjk_state.perturbed_pos1[i_b], gjk_state.perturbed_quat1[i_b] = (
+                geoms_state.pos[i_ga, i_b],
+                geoms_state.quat[i_ga, i_b],
+            )
+            gjk_state.perturbed_pos2[i_b], gjk_state.perturbed_quat2[i_b] = (
+                geoms_state.pos[i_gb, i_b],
+                geoms_state.quat[i_gb, i_b],
+            )
 
-        print(f"Running {i}-th iteration of GJK")
+        # print(f"Running {i}-th iteration of GJK")
         gjk_flag = func_gjk(
             geoms_state,
             geoms_info,
@@ -90,7 +96,7 @@ def func_gjk_contact(
             i_gb,
             i_b,
         )
-        print(f"GJK flag: {gjk_flag}")
+        # print(f"GJK flag: {gjk_flag}")
         if gjk_flag == GJK.GJK_RETURN_CODE.INTERSECT:
             # Initialize polytope
             gjk_state.polytope.nverts[i_b] = 0
@@ -131,7 +137,7 @@ def func_gjk_contact(
             )
 
             if i == 0 and gjk_state.default_epa_success[i_b] == 1:
-                # Set 
+                # Set
 
                 # Set rotation axis for perturbation
                 normal = gjk_state.default_epa_normal[i_b]
@@ -149,7 +155,7 @@ def func_gjk_contact(
 
         elif i == 0:
             break
-        
+
         if i > 0:
             # Reset the frame to the original configuration
             func_to_default_config(geoms_state, gjk_state, i_ga, i_gb, i_b)
@@ -174,21 +180,42 @@ def func_gjk_contact(
             gjk_state.diff_faces_normal[i_b, i],
             gjk_state.default_epa_penetration[i_b],
         )
-        print(f"Computed {i}-th contact: pos = {contact_pos}, normal = {contact_normal}, penetration = {penetration}, weight = {weight}, flag = {flag}")
+        # print(f"Computed {i}-th contact: pos = {contact_pos}, normal = {contact_normal}, penetration = {penetration}, weight = {weight}, flag = {flag}")
 
         if flag == GJK.RETURN_CODE.SUCCESS:
-            gjk_state.contact_pos[i_b, n_contacts] = contact_pos
-            gjk_state.normal[i_b, n_contacts] = contact_normal
-            gjk_state.diff_penetration[i_b, n_contacts] = penetration * weight
-            n_contacts += 1
+            # Check if the contact point is already in the list
+            found_duplicate = False
+            for i_c in range(n_contacts):
+                duplicate_pos = (contact_pos - gjk_state.contact_pos[i_b, i_c]).norm() < gs.EPS
+                duplicate_normal = contact_normal.dot(gjk_state.normal[i_b, i_c]) > 1 - gs.EPS
+                if duplicate_pos and duplicate_normal:
+                    found_duplicate = True
+                    diff_penetration = penetration * weight
+                    if diff_penetration > gjk_state.diff_penetration[i_b, i_c]:
+                        # Overwrite the contact point
+                        gjk_state.contact_pos[i_b, i_c] = contact_pos
+                        gjk_state.normal[i_b, i_c] = contact_normal
+                        gjk_state.diff_penetration[i_b, i_c] = penetration * weight
+                        break
+                    else:
+                        # Skip the contact point
+                        break
 
-            if n_contacts >= gjk_static_config.max_contacts_per_pair:
-                break
+            if not found_duplicate:
+                # Add the contact point to the list
+                gjk_state.contact_pos[i_b, n_contacts] = contact_pos
+                gjk_state.normal[i_b, n_contacts] = contact_normal
+                gjk_state.diff_penetration[i_b, n_contacts] = penetration * weight
+                n_contacts += 1
+
+                if n_contacts >= gjk_static_config.max_contacts_per_pair:
+                    break
 
     gjk_state.n_contacts[i_b] = n_contacts
     gjk_state.is_col[i_b] = 1 if n_contacts > 0 else 0
     gjk_state.multi_contact_flag[i_b] = 1
-    
+
+
 @ti.func
 def func_contact_orthogonals(
     i_ga,
@@ -232,6 +259,7 @@ def func_contact_orthogonals(
 
     return axis_0, axis_1
 
+
 @ti.func
 def func_rotate_frame(
     i_g,
@@ -247,6 +275,7 @@ def func_rotate_frame(
     vec = gu.ti_transform_by_quat(rel, qrot)
     vec = vec - rel
     geoms_state.pos[i_g, i_b] = geoms_state.pos[i_g, i_b] - vec
+
 
 @ti.func
 def func_differentiable_contact(
@@ -313,7 +342,12 @@ def func_differentiable_contact(
 
     # Take into account the face magnitude, as the error is relative to the face size.
     max_edge_len_inv = ti.rsqrt(
-        max((mink1 - mink2).norm_sqr(), (mink2 - mink3).norm_sqr(), (mink3 - mink1).norm_sqr(), gjk_static_config.FLOAT_MIN_SQ)
+        max(
+            (mink1 - mink2).norm_sqr(),
+            (mink2 - mink3).norm_sqr(),
+            (mink3 - mink1).norm_sqr(),
+            gjk_static_config.FLOAT_MIN_SQ,
+        )
     )
     rel_reprojection_error = reprojection_error * max_edge_len_inv
     if rel_reprojection_error > gjk_static_config.polytope_max_reprojection_error:
@@ -363,6 +397,7 @@ def func_differentiable_contact(
 
     return contact_pos, contact_normal, penetration, weight, flag
 
+
 @ti.func
 def support_driver(
     geoms_state: array_class.GeomsState,
@@ -401,6 +436,7 @@ def support_driver(
             i_b,
         )
     return v, v_, vid
+
 
 @ti.func
 def func_support(
@@ -472,6 +508,7 @@ def func_support(
         support_point_localpos2,
         support_point_minkowski,
     )
+
 
 @ti.func
 def func_gjk(
@@ -886,6 +923,7 @@ def func_search_valid_simplex_vertex(
 
     return obj1, obj2, id1, id2, localpos1, localpos2, minkowski, flag
 
+
 @ti.func
 def func_get_discrete_geom_vertex(
     geoms_state: array_class.GeomsState,
@@ -924,7 +962,6 @@ def func_get_discrete_geom_vertex(
     v = gu.ti_transform_by_trans_quat(v, g_pos, g_quat)
 
     return v, v_
-
 
 
 @ti.func
@@ -1053,7 +1090,7 @@ def func_epa(
 
     k_max = gjk_static_config.epa_max_iterations
     for k in range(k_max):
-        print(f"EPA iteration: {k}")
+        # print(f"EPA iteration: {k}")
         # Index of the nearest face
         nearest_i_f = gs.ti_int(-1)
         dir = gs.ti_vec3(0.0, 0.0, 0.0)
@@ -1061,7 +1098,7 @@ def func_epa(
 
         # Find the polytope face with the smallest distance to the origin
         while True:
-            #print(f"Finding nearest face")
+            # print(f"Finding nearest face")
             nearest_i_f = gs.ti_int(-1)
             dist2 = gjk_static_config.FLOAT_MAX_SQ
             for i in range(gjk_state.polytope.nfaces_map[i_b]):
@@ -1083,15 +1120,18 @@ def func_epa(
             dir = gjk_state.polytope_faces.normal[i_b, nearest_i_f]
 
             # Determine if this nearest face is a boundary face using its signed distance in the perturbed configuration.
-            #print(f"Nearest face's perturb boundary sdist: {gjk_state.polytope_faces.perturb_boundary_sdist[i_b, nearest_i_f]:.20g}")
+            # print(f"Nearest face's perturb boundary sdist: {gjk_state.polytope_faces.perturb_boundary_sdist[i_b, nearest_i_f]:.20g}")
             is_nearest_face_boundary = gjk_state.polytope_faces.perturb_boundary_sdist[i_b, nearest_i_f] < tolerance
 
             if is_nearest_face_boundary:
-                #print(f"Found boundary face: {nearest_i_f}")
+                # print(f"Found boundary face: {nearest_i_f}")
                 if gjk_state.default_epa_success[i_b] == 0:
-                    if func_set_default_epa_contact(gjk_state, gjk_static_config, i_b, nearest_i_f) == GJK.RETURN_CODE.SUCCESS:
+                    if (
+                        func_set_default_epa_contact(gjk_state, gjk_static_config, i_b, nearest_i_f)
+                        == GJK.RETURN_CODE.SUCCESS
+                    ):
                         gjk_state.default_epa_success[i_b] = 1
-                        print(f"Set default EPA contact")
+                        # print(f"Set default EPA contact")
                     else:
                         found_valid_dir = False
                         break
@@ -1107,14 +1147,20 @@ def func_epa(
                 # Check if this face would generate non-zero weight contact.
                 default_dist = gjk_state.polytope_faces.default_dist[i_b, nearest_i_f]
                 default_boundary_sdist = gjk_state.polytope_faces.default_boundary_sdist[i_b, nearest_i_f]
-                default_projection_affine_coords = gjk_state.polytope_faces.default_projection_affine_coords[i_b, nearest_i_f]
+                default_projection_affine_coords = gjk_state.polytope_faces.default_projection_affine_coords[
+                    i_b, nearest_i_f
+                ]
 
                 satisfy_boundary_constraint = default_boundary_sdist < eps_B
                 satisfy_distance_constraint = default_dist < gjk_state.default_epa_penetration[i_b] + eps_D
-                satisfy_affine_constraint = \
-                    (default_projection_affine_coords[0] > -eps_A) and (default_projection_affine_coords[0] < 1.0 + eps_A) and \
-                    (default_projection_affine_coords[1] > -eps_A) and (default_projection_affine_coords[1] < 1.0 + eps_A) and \
-                    (default_projection_affine_coords[2] > -eps_A) and (default_projection_affine_coords[2] < 1.0 + eps_A)
+                satisfy_affine_constraint = (
+                    (default_projection_affine_coords[0] > -eps_A)
+                    and (default_projection_affine_coords[0] < 1.0 + eps_A)
+                    and (default_projection_affine_coords[1] > -eps_A)
+                    and (default_projection_affine_coords[1] < 1.0 + eps_A)
+                    and (default_projection_affine_coords[2] > -eps_A)
+                    and (default_projection_affine_coords[2] < 1.0 + eps_A)
+                )
 
                 if satisfy_boundary_constraint and satisfy_distance_constraint and satisfy_affine_constraint:
                     # Save this face to compute contact point later.
@@ -1122,7 +1168,7 @@ def func_epa(
                 elif not satisfy_distance_constraint:
                     # The faces that we will find will have 0 weight because they would not satisfy the distance constraint.
                     found_valid_dir = False
-                    break        
+                    break
             else:
                 found_valid_dir = True
                 break
@@ -1163,7 +1209,7 @@ def func_epa(
                     repeated = True
                     break
             if repeated:
-                print(f"Repeated vertex found")
+                # print(f"Repeated vertex found")
                 break
 
         gjk_state.polytope.horizon_w[i_b] = w
@@ -1173,12 +1219,12 @@ def func_epa(
 
         if horizon_flag:
             # There was an error in the horizon construction, so the horizon edge is not a closed loop.
-            print(f"Error in horizon construction")
+            # print(f"Error in horizon construction")
             break
 
         if gjk_state.polytope.horizon_nedges[i_b] < 3:
             # Should not happen, because at least three edges should be in the horizon from one deleted face.
-            print(f"Error in horizon construction")
+            # print(f"Error in horizon construction")
             break
 
         # Check if the memory space is enough for attaching new faces
@@ -1186,7 +1232,7 @@ def func_epa(
         nedges = gjk_state.polytope.horizon_nedges[i_b]
         if nfaces + nedges >= gjk_static_config.polytope_max_faces:
             # If the polytope is full, we cannot insert new faces
-            print(f"Polytope is full")
+            # print(f"Polytope is full")
             break
 
         # Attach the new faces
@@ -1238,7 +1284,7 @@ def func_epa(
                 break
 
             dist2 = gjk_state.polytope_faces.dist2[i_b, gjk_state.polytope.nfaces[i_b] - 1]
-            
+
             # Store face in the map
             nfaces_map = gjk_state.polytope.nfaces_map[i_b]
             gjk_state.polytope_faces_map[i_b, nfaces_map] = i_f0
@@ -1246,16 +1292,17 @@ def func_epa(
             gjk_state.polytope.nfaces_map[i_b] += 1
 
         if attach_flag != GJK.RETURN_CODE.SUCCESS:
-            print(f"Error in attaching face")
+            # print(f"Error in attaching face")
             break
 
         # Clear the horizon data for the next iteration
         gjk_state.polytope.horizon_nedges[i_b] = 0
 
-        if (gjk_state.polytope.nfaces_map[i_b] == 0):
+        if gjk_state.polytope.nfaces_map[i_b] == 0:
             # No face candidate left
-            print(f"No face candidate left")
+            # print(f"No face candidate left")
             break
+
 
 @ti.func
 def func_set_default_epa_contact(
@@ -1272,7 +1319,7 @@ def func_set_default_epa_contact(
     i_v1 = gjk_state.polytope_faces.verts_idx[i_b, nearest_i_f][0]
     i_v2 = gjk_state.polytope_faces.verts_idx[i_b, nearest_i_f][1]
     i_v3 = gjk_state.polytope_faces.verts_idx[i_b, nearest_i_f][2]
-    
+
     # Because this is default epa, the frame is not perturbed.
     v1 = gjk_state.polytope_verts.mink[i_b, i_v1]
     v2 = gjk_state.polytope_verts.mink[i_b, i_v2]
@@ -1319,6 +1366,7 @@ def func_set_default_epa_contact(
 
     return flag
 
+
 @ti.func
 def func_epa_insert_vertex_to_polytope(
     gjk_state: array_class.GJKState,
@@ -1344,6 +1392,7 @@ def func_epa_insert_vertex_to_polytope(
     gjk_state.polytope_verts.mink[i_b, n] = minkowski_point
     gjk_state.polytope.nverts[i_b] += 1
     return n
+
 
 @ti.func
 def func_epa_support(
@@ -1398,6 +1447,7 @@ def func_epa_support(
     )
 
     return v_index
+
 
 @ti.func
 def func_attach_face_to_polytope(
@@ -1490,7 +1540,7 @@ def func_attach_face_to_polytope(
             i_ga,
             i_gb,
             i_b,
-            normal
+            normal,
         )
 
         # Compute boundary signed distance in this direction
@@ -1517,9 +1567,10 @@ def func_attach_face_to_polytope(
         )
         # print(f"Perturb normal: {normal}")
         # print(f"Default normal: {gjk_state.polytope_faces.default_normal[i_b, n]}")
-        gjk_state.polytope_faces.default_info_valid[i_b, n] = (default_info_flag == GJK.RETURN_CODE.SUCCESS)
+        gjk_state.polytope_faces.default_info_valid[i_b, n] = default_info_flag == GJK.RETURN_CODE.SUCCESS
 
     return flag
+
 
 @ti.func
 def func_face_info_in_default_config(
@@ -1569,7 +1620,7 @@ def func_face_info_in_default_config(
             default_mink2 = mink
         elif i == 2:
             default_mink3 = mink
-    
+
     # Recompute the face normal in the default configuration
     normal, normal_length, flag = func_plane_normal(
         gjk_static_config,
@@ -1600,7 +1651,7 @@ def func_face_info_in_default_config(
             default_mink2,
             default_mink3,
         )
-        
+
         min_boundary_sdist = gjk_static_config.FLOAT_MAX
         min_boundary_sdist_normal = gs.ti_vec3(0.0, 0.0, 0.0)
         min_boundary_sdist_vert_localpos1 = gs.ti_vec3(0.0, 0.0, 0.0)
@@ -1626,7 +1677,7 @@ def func_face_info_in_default_config(
                 i_ga,
                 i_gb,
                 i_b,
-                d
+                d,
             )
 
             # Compute boundary signed distance in this direction
@@ -1651,6 +1702,7 @@ def func_face_info_in_default_config(
     func_to_perturbed_config(geoms_state, gjk_state, i_ga, i_gb, i_b)
 
     return flag
+
 
 @ti.func
 def func_add_differentiable_face(
@@ -1690,8 +1742,9 @@ def func_add_differentiable_face(
             i_id2b = gjk_state.diff_faces_vert_id2[i_b, i][1]
             i_id2c = gjk_state.diff_faces_vert_id2[i_b, i][2]
 
-            if func_match_discrete_vertex(id1a, id1b, id1c, i_id1a, i_id1b, i_id1c) and \
-                func_match_discrete_vertex(id2a, id2b, id2c, i_id2a, i_id2b, i_id2c):
+            if func_match_discrete_vertex(id1a, id1b, id1c, i_id1a, i_id1b, i_id1c) and func_match_discrete_vertex(
+                id2a, id2b, id2c, i_id2a, i_id2b, i_id2c
+            ):
                 unique = False
                 break
 
@@ -1722,12 +1775,16 @@ def func_add_differentiable_face(
     #     # We found a duplicate face.
     #     unique = False
     #     break
-    
+
     if unique:
         gjk_state.diff_faces_normal[i_b, n] = gjk_state.polytope_faces.default_normal[i_b, i_f]
-        gjk_state.diff_faces_boundary_sdist_vert_localpos1[i_b, n] = gjk_state.polytope_faces.default_boundary_sdist_vert_localpos1[i_b, i_f]
-        gjk_state.diff_faces_boundary_sdist_vert_localpos2[i_b, n] = gjk_state.polytope_faces.default_boundary_sdist_vert_localpos2[i_b, i_f]
-        
+        gjk_state.diff_faces_boundary_sdist_vert_localpos1[i_b, n] = (
+            gjk_state.polytope_faces.default_boundary_sdist_vert_localpos1[i_b, i_f]
+        )
+        gjk_state.diff_faces_boundary_sdist_vert_localpos2[i_b, n] = (
+            gjk_state.polytope_faces.default_boundary_sdist_vert_localpos2[i_b, i_f]
+        )
+
         for i in range(3):
             i_v = gjk_state.polytope_faces.verts_idx[i_b, i_f][i]
             gjk_state.diff_faces_vert_id1[i_b, n][i] = gjk_state.polytope_verts.id1[i_b, i_v]
@@ -1737,8 +1794,8 @@ def func_add_differentiable_face(
 
         gjk_state.num_diff_faces[i_b] += 1
 
-        print(f"== Added differentiable face: {n}")
-        print(f"Normal: {gjk_state.diff_faces_normal[i_b, n]}")
+        # print(f"== Added differentiable face: {n}")
+        # print(f"Normal: {gjk_state.diff_faces_normal[i_b, n]}")
         # print(f"Boundary sdist vert localpos1: {gjk_state.diff_faces_boundary_sdist_vert_localpos1[i_b, n]}")
         # print(f"Boundary sdist vert localpos2: {gjk_state.diff_faces_boundary_sdist_vert_localpos2[i_b, n]}")
         # print(f"Vert id1: {gjk_state.diff_faces_vert_id1[i_b, n]}")
@@ -1750,13 +1807,9 @@ def func_add_differentiable_face(
         # print(f"Vert localpos2b: {gjk_state.diff_faces_vert_localpos2[i_b, n, 1]}")
         # print(f"Vert localpos2c: {gjk_state.diff_faces_vert_localpos2[i_b, n, 2]}")
 
+
 @ti.func
-def func_match_vertex(
-    v,
-    v1,
-    v2,
-    v3
-):
+def func_match_vertex(v, v1, v2, v3):
     # Compare v with v1, v2, v3 and return True if v is close to any of them.
     found = False
     eps = gs.ti_float(1e-6) ** 2
@@ -1767,6 +1820,7 @@ def func_match_vertex(
     if (v - v3).normsq() < eps:
         found = True
     return found
+
 
 @ti.func
 def func_match_discrete_vertex(
@@ -1793,6 +1847,7 @@ def func_match_discrete_vertex(
 
     return match
 
+
 @ti.func
 def func_to_default_config(
     geoms_state: array_class.GeomsState,
@@ -1805,6 +1860,7 @@ def func_to_default_config(
     geoms_state.quat[i_ga, i_b] = gjk_state.default_quat1[i_b]
     geoms_state.pos[i_gb, i_b] = gjk_state.default_pos2[i_b]
     geoms_state.quat[i_gb, i_b] = gjk_state.default_quat2[i_b]
+
 
 @ti.func
 def func_to_perturbed_config(
@@ -1819,6 +1875,7 @@ def func_to_perturbed_config(
     geoms_state.pos[i_gb, i_b] = gjk_state.perturbed_pos2[i_b]
     geoms_state.quat[i_gb, i_b] = gjk_state.perturbed_quat2[i_b]
 
+
 @ti.func
 def func_compute_minkowski_point(
     ga_pos: ti.types.vector(3),
@@ -1832,6 +1889,7 @@ def func_compute_minkowski_point(
     va_ = gu.ti_transform_by_trans_quat(va, ga_pos, ga_quat)
     vb_ = gu.ti_transform_by_trans_quat(vb, gb_pos, gb_quat)
     return va_ - vb_
+
 
 @ti.func
 def func_plane_normal(gjk_static_config: ti.template(), v1, v2, v3):

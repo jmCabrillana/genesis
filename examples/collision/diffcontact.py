@@ -16,7 +16,7 @@ scene = gs.Scene(
         max_collision_pairs=1000,
         use_gjk_collision=True,
         enable_mujoco_compatibility=False,
-        use_diff_contact=False,  # Enable differentiable contact
+        use_diff_contact=True,  # Enable differentiable contact
     ),
     viewer_options=gs.options.ViewerOptions(
         camera_pos=(2, 2, 0.75),
@@ -41,12 +41,12 @@ box_pos_offset = (0.0, 0.0, 0.0) + 0.5 * box_size * vec_one
 box0 = scene.add_entity(
     gs.morphs.Box(size=box_size * vec_one, pos=box_pos_offset, fixed=True),
     visualize_contact=False,
-    vis_mode="collision"
+    vis_mode="collision",
 )
 box1 = scene.add_entity(
     gs.morphs.Box(size=box_size * vec_one, pos=box_pos_offset + 0.8 * box_spacing * np.array([0, 0, 1]), fixed=True),
     visualize_contact=True,
-    vis_mode="collision"
+    vis_mode="collision",
 )
 
 scene.build()
@@ -68,6 +68,3 @@ for i in range(100000):
         forward = -forward
     elif i > period and (i - period) % (period * 2) == 0:
         forward = -forward
-
-    
-    
