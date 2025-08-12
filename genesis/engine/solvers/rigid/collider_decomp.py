@@ -85,7 +85,6 @@ class Collider:
             n_contacts_per_pair = 50
         else:
             n_contacts_per_pair = 5
-                
 
         # Initialize the static config
         self._collider_static_config = Collider.ColliderStaticConfig(
@@ -1818,7 +1817,7 @@ def func_add_contact(
     collider_state: array_class.ColliderState,
     collider_info: array_class.ColliderInfo,
 ):
-    print("Adding contact: ", i_ga, i_gb, i_b, "normal: ", normal, "contact_pos: ", contact_pos, "penetration: ", penetration)
+    # print("Adding contact: ", i_ga, i_gb, i_b, "normal: ", normal, "contact_pos: ", contact_pos, "penetration: ", penetration)
     i_c = collider_state.n_contacts[i_b]
     if i_c == collider_info._max_contact_pairs[None]:
         # FIXME: 'ti.static_print' cannot be used as it will be printed systematically, completely ignoring guard

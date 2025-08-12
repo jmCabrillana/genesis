@@ -854,14 +854,13 @@ class RasterizerContext:
         self.update_link_frame(self.buffer)
         self.update_tool(self.buffer)
         self.update_rigid(self.buffer)
-        # self.update_contact(self.buffer)
-        self.update_penetration(self.buffer)
+        self.update_contact(self.buffer)
+        # self.update_penetration(self.buffer)
         self.update_avatar(self.buffer)
         self.update_mpm(self.buffer)
         self.update_sph(self.buffer)
         self.update_pbd(self.buffer)
         self.update_fem(self.buffer)
-
 
     def add_light(self, light):
         # light direction is light pose's -z frame
@@ -944,7 +943,7 @@ class RasterizerContext:
 
             w1 = contact_pos - contact_normal * contact_penetration * 0.5
             w2 = contact_pos + contact_normal * contact_penetration * 0.5
-            
+
             print("n_contacts: ", n_contacts)
             for i_c in range(n_contacts):
                 for link_idx, sign in (
@@ -958,8 +957,4 @@ class RasterizerContext:
                         pos = w2[i_c]
                         vec = w1[i_c] - w2[i_c]
                     if self.sim.rigid_solver.links[link_idx].visualize_contact:
-                        self.draw_debug_arrow(
-                            pos=pos,
-                            vec=vec,
-                            persistent=False
-                        )
+                        self.draw_debug_arrow(pos=pos, vec=vec, persistent=False)

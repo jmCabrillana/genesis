@@ -66,7 +66,7 @@ def func_gjk_contact(
             # Perturbation axis must not be aligned with the principal axes of inertia the geometry,
             # otherwise it would be more sensitive to ill-conditionning.
             axis = (2 * (i % 2) - 1) * axis_0 + (1 - 2 * ((i // 2) % 2)) * axis_1
-            qrot = gu.ti_rotvec_to_quat(1e-1 * axis)
+            qrot = gu.ti_rotvec_to_quat(1e-2 * axis)
             contact_pos = gjk_state.default_epa_contact_pos[i_b]
             func_rotate_frame(i_ga, contact_pos, qrot, i_b, geoms_state, geoms_info)
             func_rotate_frame(i_gb, contact_pos, gu.ti_inv_quat(qrot), i_b, geoms_state, geoms_info)
