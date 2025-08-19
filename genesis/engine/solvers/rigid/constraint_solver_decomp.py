@@ -1725,6 +1725,7 @@ def func_update_constraint(
         constraint_state.cost
         constraint_state.active (Newton only)
     @ Output:
+        constraint_state.prev_cost
         constraint_state.active
         constraint_state.efc_force
         constraint_state.qfrc_constraint
@@ -1889,7 +1890,8 @@ def func_init_solver(
 ):
     _B = dofs_state.acc_smooth.shape[1]
     n_dofs = dofs_state.acc_smooth.shape[0]
-    # check if warm start
+
+    # 1. Compute cost for warm start qacc (qacc_ws), which is qacc from previous iteration
     initialize_Jaref(
         qacc=constraint_state.qacc_ws,
         constraint_state=constraint_state,
@@ -1915,6 +1917,8 @@ def func_init_solver(
             constraint_state=constraint_state,
             static_rigid_sim_config=static_rigid_sim_config,
         )
+
+    # 2. Compute cost for acc_smooth, which is the acceleration without constraint
     initialize_Jaref(
         qacc=dofs_state.acc_smooth,
         constraint_state=constraint_state,
@@ -1939,6 +1943,8 @@ def func_init_solver(
             constraint_state=constraint_state,
             static_rigid_sim_config=static_rigid_sim_config,
         )
+
+    # 3. Determine which qacc to use as the initial guess between qacc_ws and acc_smooth, choose the one with lower cost
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_d, i_b in ti.ndrange(n_dofs, _B):
         if constraint_state.cost_ws[i_b] < constraint_state.cost[i_b]:
@@ -1946,15 +1952,17 @@ def func_init_solver(
             constraint_state.Ma[i_d, i_b] = constraint_state.Ma_ws[i_d, i_b]
         else:
             constraint_state.qacc[i_d, i_b] = dofs_state.acc_smooth[i_d, i_b]
+
+    # 4. Recompute Jaref for the selected qacc
     initialize_Jaref(
         qacc=constraint_state.qacc,
         constraint_state=constraint_state,
         static_rigid_sim_config=static_rigid_sim_config,
     )
-    # end warm start
 
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
+        # 5. Compute cost for the selected qacc
         func_update_constraint(
             i_b,
             qacc=constraint_state.qacc,
