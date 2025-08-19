@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-import taichi as ti
+import gstaichi as ti
 
 import genesis as gs
 import genesis.utils.geom as gu
@@ -158,6 +158,7 @@ class Collider:
             links_root_idx = links_root_idx[:, 0]
             links_parent_idx = links_parent_idx[:, 0]
             links_is_fixed = links_is_fixed[:, 0]
+        entities_is_local_collision_mask = solver.entities_info.is_local_collision_mask.to_numpy()
 
         n_possible_pairs = 0
         collision_pair_validity = np.zeros((n_geoms, n_geoms), dtype=gs.np_int)
@@ -165,6 +166,8 @@ class Collider:
             for i_gb in range(i_ga + 1, n_geoms):
                 i_la = geoms_link_idx[i_ga]
                 i_lb = geoms_link_idx[i_gb]
+                i_ea = links_entity_idx[i_la]
+                i_eb = links_entity_idx[i_lb]
 
                 # geoms in the same link
                 if i_la == i_lb:
@@ -182,7 +185,10 @@ class Collider:
                         continue
 
                 # contype and conaffinity
-                if not (
+                if (
+                    (i_ea == i_eb)
+                    or not (entities_is_local_collision_mask[i_ea] or entities_is_local_collision_mask[i_eb])
+                ) and not (
                     (geoms_contype[i_ga] & geoms_conaffinity[i_gb]) or (geoms_contype[i_gb] & geoms_conaffinity[i_ga])
                 ):
                     continue
@@ -269,7 +275,7 @@ class Collider:
     def clear(self, envs_idx=None):
         if envs_idx is None:
             envs_idx = self._solver._scene._envs_idx
-        collider_kernel_clear(
+        kernel_collider_clear(
             envs_idx,
             self._solver.links_state,
             self._solver.links_info,
@@ -488,8 +494,9 @@ def collider_kernel_reset(
                 collider_state.contact_cache.normal[i_ga, i_gb, i_b] = ti.Vector.zero(gs.ti_float, 3)
 
 
+# only used with hibernation ??
 @ti.kernel
-def collider_kernel_clear(
+def kernel_collider_clear(
     envs_idx: ti.types.ndarray(),
     links_state: array_class.LinksState,
     links_info: array_class.LinksInfo,
@@ -505,8 +512,8 @@ def collider_kernel_clear(
 
             # advect hibernated contacts
             for i_c in range(collider_state.n_contacts[i_b]):
-                i_la = collider_state.contact_data[i_c, i_b].link_a
-                i_lb = collider_state.contact_data[i_c, i_b].link_b
+                i_la = collider_state.contact_data.link_a[i_c, i_b]
+                i_lb = collider_state.contact_data.link_b[i_c, i_b]
 
                 I_la = [i_la, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_la
                 I_lb = [i_lb, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_lb
@@ -519,7 +526,20 @@ def collider_kernel_clear(
                 ):
                     i_c_hibernated = collider_state.n_contacts_hibernated[i_b]
                     if i_c != i_c_hibernated:
-                        collider_state.contact_data[i_c_hibernated, i_b] = collider_state.contact_data[i_c, i_b]
+                        # Copying all fields of class StructContactData:
+                        # fmt: off
+                        collider_state.contact_data.geom_a[i_c_hibernated, i_b] = collider_state.contact_data.geom_a[i_c, i_b]
+                        collider_state.contact_data.geom_b[i_c_hibernated, i_b] = collider_state.contact_data.geom_b[i_c, i_b]
+                        collider_state.contact_data.penetration[i_c_hibernated, i_b] = collider_state.contact_data.penetration[i_c, i_b]
+                        collider_state.contact_data.normal[i_c_hibernated, i_b] = collider_state.contact_data.normal[i_c, i_b]
+                        collider_state.contact_data.pos[i_c_hibernated, i_b] = collider_state.contact_data.pos[i_c, i_b]
+                        collider_state.contact_data.friction[i_c_hibernated, i_b] = collider_state.contact_data.friction[i_c, i_b]
+                        collider_state.contact_data.sol_params[i_c_hibernated, i_b] = collider_state.contact_data.sol_params[i_c, i_b]
+                        collider_state.contact_data.force[i_c_hibernated, i_b] = collider_state.contact_data.force[i_c, i_b]
+                        collider_state.contact_data.link_a[i_c_hibernated, i_b] = collider_state.contact_data.link_a[i_c, i_b]
+                        collider_state.contact_data.link_b[i_c_hibernated, i_b] = collider_state.contact_data.link_b[i_c, i_b]
+                        # fmt: on
+
                     collider_state.n_contacts_hibernated[i_b] = i_c_hibernated + 1
 
             collider_state.n_contacts[i_b] = collider_state.n_contacts_hibernated[i_b]
@@ -539,6 +559,8 @@ def collider_kernel_get_contacts(
 ):
     _B = collider_state.active_buffer.shape[1]
     n_contacts_max = gs.ti_int(0)
+
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_b in range(_B):
         n_contacts = collider_state.n_contacts[i_b]
         if n_contacts > n_contacts_max:
@@ -1096,7 +1118,7 @@ def func_broad_phase(
     geoms_info: array_class.GeomsInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
-    # we will use ColliderBroadPhaseBuffer as typing after Hugh adds array_struct feature to taichi
+    # we will use ColliderBroadPhaseBuffer as typing after Hugh adds array_struct feature to gstaichi
     collider_state: array_class.ColliderState,
     collider_info: array_class.ColliderInfo,
 ):
@@ -1250,7 +1272,7 @@ def func_broad_phase(
 
                             if not func_is_geom_aabbs_overlap(i_ga, i_gb, i_b, geoms_state, geoms_info):
                                 # Clear collision normal cache if not in contact
-                                if ti.static(not static_rigid_sim_config._enable_mujoco_compatibility):
+                                if ti.static(not static_rigid_sim_config.enable_mujoco_compatibility):
                                     # self.contact_cache[i_ga, i_gb, i_b].i_va_ws = -1
                                     collider_state.contact_cache.normal[i_ga, i_gb, i_b] = ti.Vector.zero(
                                         gs.ti_float, 3

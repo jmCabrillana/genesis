@@ -5,7 +5,7 @@ import numba as nb
 import torch
 import torch.nn.functional as F
 
-import taichi as ti
+import gstaichi as ti
 
 import genesis as gs
 
@@ -493,7 +493,7 @@ def _np_xyz_to_quat(xyz: np.ndarray, rpy: bool = False, out: np.ndarray | None =
     """
     assert xyz.ndim >= 1
     if out is None:
-        out_ = np.empty((*xyz.shape[:-1], 4))
+        out_ = np.empty((*xyz.shape[:-1], 4), dtype=xyz.dtype)
     else:
         assert out.shape == (*xyz.shape[:-1], 4)
         out_ = out
@@ -532,12 +532,13 @@ def _tc_xyz_to_quat(xyz: torch.Tensor, rpy: bool = False, *, out: torch.Tensor |
 
 
 def xyz_to_quat(xyz, rpy=False, degrees=False):
-    if degrees:
-        xyz = xyz * (math.pi / 180.0)
-
     if isinstance(xyz, torch.Tensor):
+        if degrees:
+            xyz = torch.deg2rad(xyz)
         return _tc_xyz_to_quat(xyz, rpy)
     elif isinstance(xyz, np.ndarray):
+        if degrees:
+            xyz = np.deg2rad(xyz)
         return _np_xyz_to_quat(xyz, rpy)
     else:
         gs.raise_exception(f"the input must be either torch.Tensor or np.ndarray. got: {type(xyz)=}")
@@ -703,12 +704,14 @@ def _tc_quat_to_xyz(quat, rpy=False, out=None):
 def quat_to_xyz(quat, rpy=False, degrees=False):
     if isinstance(quat, torch.Tensor):
         rpy = _tc_quat_to_xyz(quat, rpy)
+        if degrees:
+            rpy = torch.rad2deg(rpy)
     elif isinstance(quat, np.ndarray):
         rpy = _np_quat_to_xyz(quat, rpy)
+        if degrees:
+            rpy = np.rad2deg(rpy)
     else:
         gs.raise_exception(f"the input must be either torch.Tensor or np.ndarray. got: {type(quat)=}")
-    if degrees:
-        rpy *= 180.0 / math.pi
     return rpy
 
 
@@ -1159,20 +1162,31 @@ def _np_z_up_to_R(z, up=None, out=None):
         if z_norm_i > gs.EPS:
             z /= z_norm_i
         else:
-            z[:] = 0.0, 1.0, 0.0
+            if up is None or abs(up[i][1]) < 0.5:
+                z[:] = 0.0, 1.0, 0.0
+            else:
+                z[:] = 0.0, 0.0, 1.0
 
         if up is not None:
             x[:] = np.cross(up[i], z)
         else:
-            x[0] = z[1]
-            x[1] = -z[0]
-            x[2] = 0.0
+            if abs(z[2]) < 1.0 - gs.EPS:
+                # up = (0.0, 0.0, 1.0)
+                x[0] = z[1]
+                x[1] = -z[0]
+                x[2] = 0.0
+            else:
+                # up = (0.0, 1.0, 0.0)
+                x[0] = z[2]
+                x[1] = 0.0
+                x[2] = -z[0]
 
         x_norm = np.linalg.norm(x)
         if x_norm > gs.EPS:
             x /= x_norm
             y[:] = np.cross(z, x)
         else:
+            # This would only occurs if the user specified non-zero colinear z and up
             R[:] = np.eye(3, dtype=R.dtype)
 
     return out_
@@ -1199,16 +1213,22 @@ def _tc_z_up_to_R(z, up=None, out=None):
     # Handle zero norm cases
     zero_mask = z_norm[..., 0] < gs.EPS
     if zero_mask.any():
-        z[zero_mask] = torch.tensor((0.0, 1.0, 0.0), device=z.device, dtype=z.dtype)
+        if up is None:
+            z[zero_mask] = torch.tensor((0.0, 1.0, 0.0), device=z.device, dtype=z.dtype)
+        else:
+            up_mask = up[..., 1].abs() < 0.5
+            z[zero_mask & up_mask] = torch.tensor((0.0, 1.0, 0.0), device=z.device, dtype=z.dtype)
+            z[zero_mask & ~up_mask] = torch.tensor((0.0, 0.0, 1.0), device=z.device, dtype=z.dtype)
 
     # Compute x vectors (first column)
     if up is not None:
         x[:] = torch.cross(up, z, dim=-1)
     else:
-        # Default up vector case
-        x[..., 0] = z[..., 1]
-        x[..., 1] = -z[..., 0]
-        x[..., 2] = 0.0
+        up_mask = z[..., 2].abs() < 1.0 - gs.EPS
+        _zero = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+        torch.where(up_mask, z[..., 1], z[..., 2], out=x[..., 0])
+        torch.where(up_mask, -z[..., 0], _zero, out=x[..., 1])
+        torch.where(up_mask, _zero, -z[..., 0], out=x[..., 2])
 
     # Normalize x vectors
     x_norm = torch.norm(x, dim=-1, keepdim=True)
@@ -1216,13 +1236,14 @@ def _tc_z_up_to_R(z, up=None, out=None):
 
     # Handle zero x norm cases
     zero_x_mask = x_norm[..., 0] < gs.EPS
-    if zero_x_mask.any():
+    zero_x_num = zero_x_mask.sum()
+    if zero_x_num:
         # For zero x norm, set identity matrix
-        R[zero_x_mask] = torch.eye(3, device=z.device, dtype=z.dtype)
+        R[zero_x_mask] = torch.eye(3, device=z.device, dtype=z.dtype).unsqueeze(0).expand((zero_x_num, 3, 3))
 
         # Continue with non-zero cases
         valid_mask = ~zero_x_mask
-        if valid_mask.any():
+        if zero_x_num < zero_x_mask.numel():
             z_valid = z[valid_mask]
             x_valid = x[valid_mask]
             y[valid_mask] = torch.cross(z_valid, x_valid, dim=-1)
@@ -1307,7 +1328,7 @@ def _np_euler_to_R(rpy: np.ndarray, out: np.ndarray | None = None) -> np.ndarray
 
 
 def euler_to_R(euler_xyz):
-    return _np_euler_to_R(np.asarray(euler_xyz) * (math.pi / 180.0))
+    return _np_euler_to_R(np.deg2rad(euler_xyz))
 
 
 @nb.jit(nopython=True, cache=True)
