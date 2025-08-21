@@ -1599,6 +1599,8 @@ def func_solve(
         if constraint_state.n_constraints[i_b] > 0:
             tol_scaled = (rigid_global_info.meaninertia[i_b] * ti.max(1, n_dofs)) * static_rigid_sim_config.tolerance
             for it in range(static_rigid_sim_config.iterations):
+                # for i_d in range(n_dofs):
+                #     print(f"{it}th iteration search direction[{i_d}]: {constraint_state.search[i_d, i_b]:.20g}")
                 func_solve_body(
                     i_b,
                     entities_info=entities_info,
@@ -1607,6 +1609,8 @@ def func_solve(
                     constraint_state=constraint_state,
                     static_rigid_sim_config=static_rigid_sim_config,
                 )
+                # for i_d in range(n_dofs):
+                #     print(f"{it}th iteration qacc[{i_d}]: {constraint_state.qacc[i_d, i_b]:.20g}")
                 if constraint_state.improved[i_b] < 1:
                     break
 
@@ -2127,6 +2131,7 @@ def func_update_constraint(
         constraint_state.cost
         constraint_state.prev_active (Newton only)
     """
+    # print("Update constraint")
     n_dofs = constraint_state.qfrc_constraint.shape[0]
     ne = constraint_state.n_constraints_equality[i_b]
     nef = ne + constraint_state.n_constraints_frictionloss[i_b]
@@ -2158,6 +2163,10 @@ def func_update_constraint(
         constraint_state.efc_force[i_c, i_b] = floss_force + (
             -constraint_state.efc_D[i_c, i_b] * constraint_state.Jaref[i_c, i_b] * constraint_state.active[i_c, i_b]
         )
+        # print(f"efc_force[{i_c}, {i_b}] = {constraint_state.efc_force[i_c, i_b]:.20g}")
+        # print(f"efc_D[{i_c}, {i_b}] = {constraint_state.efc_D[i_c, i_b]:.20g}")
+        # print(f"Jaref[{i_c}, {i_b}] = {constraint_state.Jaref[i_c, i_b]:.20g}")
+        # print(f"active[{i_c}, {i_b}] = {constraint_state.active[i_c, i_b]}")
 
     if ti.static(static_rigid_sim_config.sparse_solve):
         for i_d in range(n_dofs):
@@ -2175,6 +2184,7 @@ def func_update_constraint(
             for i_c in range(constraint_state.n_constraints[i_b]):
                 qfrc_constraint += constraint_state.jac[i_c, i_d, i_b] * constraint_state.efc_force[i_c, i_b]
             constraint_state.qfrc_constraint[i_d, i_b] = qfrc_constraint
+            # print(f"qfrc_constraint[{i_d}, {i_b}] = {constraint_state.qfrc_constraint[i_d, i_b]:.20g}")
     # (Mx - Mx') * (x - x')
     for i_d in range(n_dofs):
         v = 0.5 * (Ma[i_d, i_b] - dofs_state.force[i_d, i_b]) * (qacc[i_d, i_b] - dofs_state.acc_smooth[i_d, i_b])
@@ -2210,10 +2220,15 @@ def func_update_gradient(
     """
     n_dofs = constraint_state.grad.shape[0]
 
+    # print("Update gradient")
     for i_d in range(n_dofs):
         constraint_state.grad[i_d, i_b] = (
             constraint_state.Ma[i_d, i_b] - dofs_state.force[i_d, i_b] - constraint_state.qfrc_constraint[i_d, i_b]
         )
+        # print(f"Ma[{i_d}, {i_b}] = {constraint_state.Ma[i_d, i_b]:.20g}")
+        # print(f"force[{i_d}, {i_b}] = {dofs_state.force[i_d, i_b]:.20g}")
+        # print(f"qfrc_constraint[{i_d}, {i_b}] = {constraint_state.qfrc_constraint[i_d, i_b]:.20g}")
+        # print(f"grad[{i_d}, {i_b}] = {constraint_state.grad[i_d, i_b]:.20g}")
 
     if ti.static(static_rigid_sim_config.solver_type == gs.constraint_solver.CG):
         rigid_solver.func_solve_mass_batched(
@@ -2359,6 +2374,8 @@ def func_init_solver(
             constraint_state.Ma[i_d, i_b] = constraint_state.Ma_ws[i_d, i_b]
         else:
             constraint_state.qacc[i_d, i_b] = dofs_state.acc_smooth[i_d, i_b]
+
+        # print(f"Initial guess qacc [{i_d}]: {constraint_state.qacc[i_d, i_b]:.20g}")
 
     # 4. Recompute Jaref for the selected qacc
     initialize_Jaref(
