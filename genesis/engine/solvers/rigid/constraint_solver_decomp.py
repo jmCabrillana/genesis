@@ -585,10 +585,10 @@ def constraint_solver_backward_kernel_compute_gradients(
             if ti.static(static_rigid_sim_config.sparse_solve):
                 for k in range(constraint_state.jac_n_relevant_dofs[i_c, i_b]):
                     i_d = constraint_state.jac_relevant_dofs[i_c, k, i_b]
-                    t += constraint_state.jac[i_c, i_d, i_b] * constraint_state.bw_u[i_d, i_b]
+                    t += constraint_state.jac[i_c, i_d, i_b] * constraint_state.qacc[i_d, i_b]
             else:
                 for i_d in range(n_dofs):
-                    t += constraint_state.jac[i_c, i_d, i_b] * constraint_state.bw_u[i_d, i_b]
+                    t += constraint_state.jac[i_c, i_d, i_b] * constraint_state.qacc[i_d, i_b]
             constraint_state.bw_w[i_c, i_b] = t - constraint_state.aref[i_c, i_b]
             constraint_state.bw_y[i_c, i_b] = constraint_state.efc_D[i_c, i_b] * constraint_state.bw_w[i_c, i_b]
 
