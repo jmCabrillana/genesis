@@ -410,6 +410,7 @@ class ConstraintSolver:
 
         # 2. Using the solution u, we can compute the gradients of the input variables.
         constraint_solver_backward_kernel_compute_gradients(
+            entities_info=self._solver.entities_info,
             constraint_state=self.constraint_state,
             static_rigid_sim_config=self._solver._static_rigid_sim_config,
         )
@@ -539,6 +540,7 @@ def constraint_solver_backward_kernel_solve_Au_g(
 
 @ti.kernel
 def constraint_solver_backward_kernel_compute_gradients(
+    entities_info: array_class.EntitiesInfo,
     constraint_state: array_class.ConstraintState,
     static_rigid_sim_config: ti.template(),
 ):
@@ -629,10 +631,15 @@ def constraint_solver_backward_kernel_compute_gradients(
                         )
 
         # M: -u * qacc^T
-        for i_d1 in range(n_dofs):
-            u_i = constraint_state.bw_u[i_d1, i_b]
-            for i_d2 in range(n_dofs):
-                constraint_state.dL_dM[i_d1, i_d2, i_b] += -u_i * constraint_state.qacc[i_d2, i_b]
+        n_entities = entities_info.n_links.shape[0]
+        for i_e in range(n_entities):
+            s = entities_info.dof_start[i_e]
+            e = entities_info.dof_end[i_e]
+            for i in range(s, e):
+                for j in range(s, e):
+                    val0 = -constraint_state.bw_u[i, i_b] * constraint_state.qacc[j, i_b]
+                    val1 = -constraint_state.bw_u[j, i_b] * constraint_state.qacc[i, i_b]
+                    constraint_state.dL_dM[i, j, i_b] += (val0 + val1) * 0.5  # symmetrize
 
 
 @ti.kernel
