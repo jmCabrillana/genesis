@@ -481,61 +481,88 @@ def constraint_solver_backward_kernel_solve_Au_g(
     """
     n_dofs = constraint_state.bw_u.shape[0]
     _B = constraint_state.bw_u.shape[1]
-    # 1. Initialize u
+
+    # Initialize u
     for i_d, i_b in ti.ndrange(n_dofs, _B):
         constraint_state.bw_u[i_d, i_b] = 0.0
 
-    # 2. Local buffers for solving A * u = g
-    # Initialize r, p with dL_dqacc
-    for i_d, i_b in ti.ndrange(n_dofs, _B):
-        # Residual: g - A * 0 (u = 0)
-        constraint_state.bw_r[i_d, i_b] = constraint_state.dL_dqacc[i_d, i_b]
-        # Search direction: p = r
-        constraint_state.bw_p[i_d, i_b] = constraint_state.bw_r[i_d, i_b]
-
-    # 3. Solve A * u = g, parallelized over batch dimension
-    for i_b in range(_B):
-        # Compute Ap for the current search direction
-        for it in range(static_rigid_sim_config.iterations):
-            func_backward_compute_Ap(
-                entities_info=entities_info,
-                rigid_global_info=rigid_global_info,
-                constraint_state=constraint_state,
-                static_rigid_sim_config=static_rigid_sim_config,
-                i_b=i_b,
-            )
-
-            # alpha = (r,r)/(p,Hp)
-            num = gs.ti_float(0.0)
-            den = gs.ti_float(0.0)
+    if ti.static(static_rigid_sim_config.solver_type == gs.constraint_solver.Newton):
+        """
+        Since we already have the Cholesky decomposition of A (= L * L^T), we can use it to solve A * u = g.
+        """
+        for i_b in range(_B):
+            # z = L^{-1} g  (forward substitution)
+            # Save solution to bw_r
             for i_d in range(n_dofs):
-                num += constraint_state.bw_r[i_d, i_b] * constraint_state.bw_r[i_d, i_b]
-                den += constraint_state.bw_p[i_d, i_b] * constraint_state.bw_Ap[i_d, i_b]
-            alpha = num / ti.max(den, gs.EPS)
+                z = constraint_state.dL_dqacc[i_d, i_b]
+                for j_d in range(i_d):
+                    z -= constraint_state.nt_H[i_d, j_d, i_b] * constraint_state.bw_r[j_d, i_b]
+                z /= constraint_state.nt_H[i_d, i_d, i_b]
+                constraint_state.bw_r[i_d, i_b] = z
 
-            # print(f"[Au = g] iteration {it}: residual norm^2 = {num:.20g}")
+            # u = L^{-T} z  (back substitution)
+            for i_d_ in range(n_dofs):
+                i_d = n_dofs - 1 - i_d_
+                u = constraint_state.bw_r[i_d, i_b]
+                for j_d in range(i_d + 1, n_dofs):
+                    u -= constraint_state.nt_H[j_d, i_d, i_b] * constraint_state.bw_u[j_d, i_b]
+                u /= constraint_state.nt_H[i_d, i_d, i_b]
+                constraint_state.bw_u[i_d, i_b] = u
+    else:
+        """
+        Use CG solver for solving A * u = g.
+        """
+        # 2. Local buffers for solving A * u = g
+        # Initialize r, p with dL_dqacc
+        for i_d, i_b in ti.ndrange(n_dofs, _B):
+            # Residual: g - A * 0 (u = 0)
+            constraint_state.bw_r[i_d, i_b] = constraint_state.dL_dqacc[i_d, i_b]
+            # Search direction: p = r
+            constraint_state.bw_p[i_d, i_b] = constraint_state.bw_r[i_d, i_b]
 
-            # u += alpha p ; r -= alpha Hp
-            for i_d in range(n_dofs):
-                constraint_state.bw_u[i_d, i_b] += alpha * constraint_state.bw_p[i_d, i_b]
-                constraint_state.bw_r[i_d, i_b] -= alpha * constraint_state.bw_Ap[i_d, i_b]
-
-            # check tol (optional: per-batch)
-            # TODO: Might need lower tolerance?
-            if num < gs.EPS:
-                break
-
-            # beta = (r_new,r_new)/(r_old,r_old)
-            num_new = gs.ti_float(0.0)
-            for i_d in range(n_dofs):
-                num_new += constraint_state.bw_r[i_d, i_b] * constraint_state.bw_r[i_d, i_b]
-            beta = num_new / ti.max(num, gs.EPS)
-
-            # p = r + beta p
-            for i_d in range(n_dofs):
-                constraint_state.bw_p[i_d, i_b] = (
-                    constraint_state.bw_r[i_d, i_b] + beta * constraint_state.bw_p[i_d, i_b]
+        # 3. Solve A * u = g, parallelized over batch dimension
+        for i_b in range(_B):
+            # Compute Ap for the current search direction
+            for it in range(static_rigid_sim_config.iterations):
+                func_backward_compute_Ap(
+                    entities_info=entities_info,
+                    rigid_global_info=rigid_global_info,
+                    constraint_state=constraint_state,
+                    static_rigid_sim_config=static_rigid_sim_config,
+                    i_b=i_b,
                 )
+
+                # alpha = (r,r)/(p,Hp)
+                num = gs.ti_float(0.0)
+                den = gs.ti_float(0.0)
+                for i_d in range(n_dofs):
+                    num += constraint_state.bw_r[i_d, i_b] * constraint_state.bw_r[i_d, i_b]
+                    den += constraint_state.bw_p[i_d, i_b] * constraint_state.bw_Ap[i_d, i_b]
+                alpha = num / ti.max(den, gs.EPS)
+
+                # print(f"[Au = g] iteration {it}: residual norm^2 = {num:.20g}")
+
+                # u += alpha p ; r -= alpha Hp
+                for i_d in range(n_dofs):
+                    constraint_state.bw_u[i_d, i_b] += alpha * constraint_state.bw_p[i_d, i_b]
+                    constraint_state.bw_r[i_d, i_b] -= alpha * constraint_state.bw_Ap[i_d, i_b]
+
+                # check tol (optional: per-batch)
+                # TODO: Might need lower tolerance?
+                if num < gs.EPS:
+                    break
+
+                # beta = (r_new,r_new)/(r_old,r_old)
+                num_new = gs.ti_float(0.0)
+                for i_d in range(n_dofs):
+                    num_new += constraint_state.bw_r[i_d, i_b] * constraint_state.bw_r[i_d, i_b]
+                beta = num_new / ti.max(num, gs.EPS)
+
+                # p = r + beta p
+                for i_d in range(n_dofs):
+                    constraint_state.bw_p[i_d, i_b] = (
+                        constraint_state.bw_r[i_d, i_b] + beta * constraint_state.bw_p[i_d, i_b]
+                    )
 
 
 @ti.kernel
