@@ -61,7 +61,15 @@ def get_rigid_global_info(solver):
         "geoms_init_AABB": V_VEC(3, dtype=gs.ti_float, shape=(solver.n_geoms_, 8)),
         "mass_mat": V(dtype=gs.ti_float, shape=solver._batch_shape((n_frame, solver.n_dofs_, solver.n_dofs_))),
         "mass_mat_L": V(dtype=gs.ti_float, shape=solver._batch_shape((n_frame, solver.n_dofs_, solver.n_dofs_))),
-        "mass_mat_D_inv": V(dtype=gs.ti_float, shape=solver._batch_shape((n_frame, solver.n_dofs_,))),
+        "mass_mat_D_inv": V(
+            dtype=gs.ti_float,
+            shape=solver._batch_shape(
+                (
+                    n_frame,
+                    solver.n_dofs_,
+                )
+            ),
+        ),
         "_mass_mat_mask": V(dtype=gs.ti_int, shape=solver._batch_shape((n_frame, solver.n_entities_))),
         "meaninertia": V(dtype=gs.ti_float, shape=solver._batch_shape()),
         "mass_parent_mask": V(dtype=gs.ti_float, shape=(solver.n_dofs_, solver.n_dofs_)),
@@ -2049,6 +2057,7 @@ def get_static_rigid_sim_cache_key(solver):
 
 # =========================================== RigidAdjointCache ===========================================
 
+
 @dataclasses.dataclass
 class StructRigidAdjointCache:
     forward_kinematics_joint_pos: V_ANNOTATION
@@ -2060,14 +2069,17 @@ class StructRigidAdjointCache:
     mass_mat_L0: V_ANNOTATION
     mass_mat_L1: V_ANNOTATION
 
+
 def get_rigid_adjoint_cache(solver):
     n_frame = solver._sim.substeps_local + 1
-    
+
     kwargs = {
         "forward_kinematics_joint_pos_in": V(dtype=gs.ti_vec3, shape=solver._batch_shape((n_frame, solver.n_joints_))),
         "forward_kinematics_joint_pos_out": V(dtype=gs.ti_vec3, shape=solver._batch_shape((n_frame, solver.n_joints_))),
         "forward_kinematics_joint_quat_in": V(dtype=gs.ti_vec4, shape=solver._batch_shape((n_frame, solver.n_joints_))),
-        "forward_kinematics_joint_quat_out": V(dtype=gs.ti_vec4, shape=solver._batch_shape((n_frame, solver.n_joints_))),
+        "forward_kinematics_joint_quat_out": V(
+            dtype=gs.ti_vec4, shape=solver._batch_shape((n_frame, solver.n_joints_))
+        ),
         "i_pos": V(dtype=gs.ti_vec3, shape=solver._batch_shape((n_frame, solver.n_links_))),
         "j_pos": V(dtype=gs.ti_vec3, shape=solver._batch_shape((n_frame, solver.n_links_))),
         "j_quat": V(dtype=gs.ti_vec4, shape=solver._batch_shape((n_frame, solver.n_links_))),
@@ -2087,6 +2099,7 @@ def get_rigid_adjoint_cache(solver):
                     setattr(self, k, v)
 
         return ClassRigidAdjointCache()
+
 
 # =========================================== DataManager ===========================================
 
@@ -2122,7 +2135,7 @@ class DataManager:
 
         self.entities_info = get_entities_info(solver)
         self.entities_state = get_entities_state(solver)
-        
+
         self.rigid_adjoint_cache = get_rigid_adjoint_cache(solver)
 
 
@@ -2158,4 +2171,3 @@ GJKState = ti.template() if not use_ndarray else StructGJKState
 SDFInfo = ti.template() if not use_ndarray else StructSDFInfo
 ContactIslandState = ti.template() if not use_ndarray else StructContactIslandState
 RigidAdjointCache = ti.template() if not use_ndarray else StructRigidAdjointCache
-

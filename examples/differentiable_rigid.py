@@ -20,26 +20,23 @@ def main():
     ########################## create a scene ##########################
     dt = 1e-2
     horizon = 100
-    substeps = 3 # [1, 3]
+    substeps = 3  # [1, 3]
     n_envs = 10  # [0, 10]
     goal_pos = gs.tensor([0.7, 1.0, 0.05])
     goal_quat = torch.nn.functional.normalize(gs.tensor([0.3, 0.2, 0.1, 0.9]), p=2, dim=-1)
     optimize_init_pos = True
-    
+
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=dt,
-            substeps=substeps,
-            requires_grad=True,
-            gravity=(0, 0, -1)           # disable gravity
+            dt=dt, substeps=substeps, requires_grad=True, gravity=(0, 0, -1)  # disable gravity
         ),
         rigid_options=gs.options.RigidOptions(
-            enable_collision=False,         # disable collision for now
-            enable_self_collision=False,    # disable self-collision for now
-            enable_joint_limit=False,       # disable joint limit for now
-            disable_constraint=True,        # disable constraint (e.g. collision) for now
-            use_contact_island=False,       # disable contact island for now
-            use_hibernation=False,          # disable hibernation for now
+            enable_collision=False,  # disable collision for now
+            enable_self_collision=False,  # disable self-collision for now
+            enable_joint_limit=False,  # disable joint limit for now
+            disable_constraint=True,  # disable constraint (e.g. collision) for now
+            use_contact_island=False,  # disable contact island for now
+            use_hibernation=False,  # disable hibernation for now
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(2.5, -0.15, 2.42),
@@ -86,7 +83,7 @@ def main():
     num_iter = 200
     lr = 1e-2
     record_every = 50
-    
+
     if optimize_init_pos:
         init_pos = gs.tensor([0.3, 0.1, 0.28], requires_grad=True)
         init_quat = gs.tensor([1.0, 0.0, 0.0, 0.0], requires_grad=True)
@@ -99,23 +96,22 @@ def main():
         init_vel = gs.tensor([0.0, 0.0, 1.0], requires_grad=True)
         init_ang = gs.tensor([1.0, 1.0, 1.0], requires_grad=True)
         optimizer = torch.optim.Adam([init_vel, init_ang], lr=lr)
-    
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_iter, eta_min=1e-3)
-    
-    
+
     bar = tqdm.tqdm(range(num_iter))
     for iter in bar:
         scene.reset()
-        
+
         do_record = (iter % record_every == 0) or (iter == num_iter - 1)
-        
+
         box.set_position(init_pos)
         box.set_quaternion(init_quat)
         box.set_velocity(init_vel)
         box.set_angular_velocity(init_ang)
         if do_record:
             cam.start_recording()
-        
+
         loss = 0
         for i in range(horizon):
             scene.step()
@@ -133,27 +129,27 @@ def main():
         loss.backward()  # this lets gradient flow all the way back to tensor input
         optimizer.step()
         scheduler.step()
-        
+
         bar.set_description(f"loss: {loss.item():.4f} | lr: {scheduler.get_last_lr()[0]:.4f}")
         with torch.no_grad():
             init_quat.data = torch.nn.functional.normalize(init_quat.data, p=2, dim=-1)
-            
+
         ## save the video
         if do_record:
             fps = 1.0 / dt
             script_name = __file__.split("/")[-1].split(".")[0]
             dir_name = "posvel" if optimize_init_pos else "vel"
             cam.stop_recording(save_to_filename=f"output/{script_name}/{dir_name}/cam_{iter:04d}.mp4", fps=fps)
-        
+
     print("====================== Optimization Results")
     print("goal pos: ", goal_pos)
     print("init pos: ", init_pos)
     print()
-    
+
     print("goal quat: ", goal_quat)
     print("init quat: ", init_quat)
     print()
-    
+
     print("init vel: ", init_vel)
 
 

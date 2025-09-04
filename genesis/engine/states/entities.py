@@ -189,14 +189,16 @@ class FEMEntityState:
     def active(self):
         return self._active
 
+
 class RigidEntityState(RBC):
     """
     Dynamic state queried from a genesis RigidEntity.
     """
+
     def __init__(self, entity, s_global):
         self._entity = entity
         self._s_global = s_global
-        
+
         args = {
             "dtype": gs.tc_float,
             "requires_grad": self._entity.scene.requires_grad,
