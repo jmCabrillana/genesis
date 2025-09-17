@@ -2,15 +2,17 @@ import ctypes
 import datetime
 import functools
 import logging
+import math
 import platform
 import random
 import types
 import shutil
 import sys
 import os
+import weakref
 from collections import OrderedDict
-from dataclasses import dataclass
-from typing import Any, Type, NoReturn, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, NoReturn, Optional, Type
 
 import numpy as np
 import cpuinfo
@@ -18,10 +20,10 @@ import psutil
 import torch
 
 import gstaichi as ti
-from gstaichi.lang.util import to_pytorch_type
+from gstaichi.lang.util import is_ti_template, to_pytorch_type
 from gstaichi._kernels import tensor_to_ext_arr, matrix_to_ext_arr, ndarray_to_ext_arr, ndarray_matrix_to_ext_arr
 from gstaichi.lang import impl
-from gstaichi.types import primitive_types, ndarray_type
+from gstaichi.types import primitive_types
 from gstaichi.lang.exception import handle_exception_from_cpp
 
 import genesis as gs
@@ -179,23 +181,23 @@ def get_platform():
 
 
 def get_device(backend: gs_backend, device_idx: Optional[int] = None):
-    if backend == gs_backend.cuda:
+    if backend == gs_backend.cpu:
+        device_name = cpuinfo.get_cpu_info()["brand_raw"]
+        total_mem = psutil.virtual_memory().total / 1024**3
+        device = torch.device("cpu", device_idx)
+    elif backend == gs_backend.cuda:
         if not torch.cuda.is_available():
             gs.raise_exception("torch cuda not available")
-
         device = torch.device("cuda", device_idx)
         device_property = torch.cuda.get_device_properties(device)
         device_name = device_property.name
         total_mem = device_property.total_memory / 1024**3
-
     elif backend == gs_backend.metal:
         if not torch.backends.mps.is_available():
             gs.raise_exception("metal device not available")
-
-        # on mac, cpu and gpu are in the same device
+        # on mac, cpu and gpu are in the same physical hardware and sharing memory
         _, device_name, total_mem, _ = get_device(gs_backend.cpu)
         device = torch.device("mps", device_idx)
-
     elif backend == gs_backend.vulkan:
         if torch.cuda.is_available():
             device, device_name, total_mem, _ = get_device(gs_backend.cuda)
@@ -211,19 +213,13 @@ def get_device(backend: gs_backend, device_idx: Optional[int] = None):
             logger = getattr(gs, "logger", None) or LOGGER
             logger.warning("No Intel XPU device available. Falling back to CPU for torch device.")
             device, device_name, total_mem, _ = get_device(gs_backend.cpu)
-
-    elif backend == gs_backend.gpu:
+    else:  # backend == gs_backend.gpu:
         if torch.cuda.is_available():
             return get_device(gs_backend.cuda)
         elif get_platform() == "macOS":
             return get_device(gs_backend.metal)
         else:
             return get_device(gs_backend.vulkan)
-
-    else:
-        device_name = cpuinfo.get_cpu_info()["brand_raw"]
-        total_mem = psutil.virtual_memory().total / 1024**3
-        device = torch.device("cpu", device_idx)
 
     return device, device_name, total_mem, backend
 
@@ -326,6 +322,46 @@ def is_approx_multiple(a, b, tol=1e-7):
     return abs(a % b) < tol or abs(b - (a % b)) < tol
 
 
+def concat_with_tensor(tensor: torch.Tensor, value, expand: tuple[int, ...] | None = None, dim: int = 0):
+    """Helper method to concatenate a value (not necessarily a tensor) with a tensor."""
+    if not isinstance(value, torch.Tensor):
+        value = torch.tensor([value], dtype=tensor.dtype, device=tensor.device)
+    if expand is not None:
+        value = value.expand(*expand)
+    if dim < 0:
+        dim = tensor.ndim + dim
+    assert (
+        0 <= dim < tensor.ndim
+        and tensor.ndim == value.ndim
+        and all(e_1 == e_2 for i, (e_1, e_2) in enumerate(zip(tensor.shape, value.shape)) if e_1 > 0 and i != dim)
+    )
+    if tensor.numel() == 0:
+        return value
+    return torch.cat([tensor, value], dim=dim)
+
+
+def make_tensor_field(shape: tuple[int, ...] = (), dtype_factory: Callable[[], torch.dtype] | None = None):
+    """
+    Helper method to create a tensor field for dataclasses.
+
+    Parameters
+    ----------
+    shape : tuple
+        The shape of the tensor field. It must have zero elements, otherwise it will trigger an exception.
+    dtype_factory : Callable[[], torch.dtype], optional
+        The factory function to create the dtype of the tensor field. Default is gs.tc_float.
+        A factory is used because gs types may not be available at the time of field creation.
+    """
+    assert not shape or math.prod(shape) == 0
+
+    def _default_factory():
+        nonlocal shape, dtype_factory
+        dtype = dtype_factory() if dtype_factory is not None else gs.tc_float
+        return torch.empty(shape, dtype=dtype, device=gs.device)
+
+    return field(default_factory=_default_factory)
+
+
 # -------------------------------------- TAICHI SPECIALIZATION --------------------------------------
 
 ALLOCATE_TENSOR_WARNING = (
@@ -333,7 +369,8 @@ ALLOCATE_TENSOR_WARNING = (
     "impede performance if it occurs in the critical path of your application."
 )
 
-FIELD_CACHE: dict[int, "FieldMetadata"] = OrderedDict()
+TI_PROG_WEAKREF: weakref.ReferenceType | None = None
+TI_DATA_CACHE: OrderedDict[int, "FieldMetadata"] = OrderedDict()
 MAX_CACHE_SIZE = 1000
 
 
@@ -341,31 +378,27 @@ MAX_CACHE_SIZE = 1000
 class FieldMetadata:
     ndim: int
     shape: tuple[int, ...]
-    try:
-        dtype: ti._lib.core.DataType
-    except:
-        dtype: ti._lib.core.DataTypeCxx
+    dtype: ti._lib.core.DataTypeCxx
     mapping_key: Any
 
 
 def _ensure_compiled(self, *args):
     # Note that the field is enough to determine the key because all the other arguments depends on it.
     # This may not be the case anymore if the output is no longer dynamically allocated at some point.
-    field_meta = FIELD_CACHE[id(args[0])]
-    key = field_meta.mapping_key
+    ti_data_meta = TI_DATA_CACHE[id(args[0])]
+    key = ti_data_meta.mapping_key
     if key is None:
         extracted = []
         for arg, kernel_arg in zip(args, self.mapper.arguments):
             anno = kernel_arg.annotation
-            if anno == ti.template or isinstance(anno, ti.template):
+            if is_ti_template(anno):
                 subkey = arg
-            else:
+            else:  # isinstance(annotation, (ti.types.ndarray_type.NdarrayType, torch.Tensor, np.ndarray))
                 needs_grad = getattr(arg, "requires_grad", False) if anno.needs_grad is None else anno.needs_grad
                 subkey = (arg.dtype, len(arg.shape), needs_grad, anno.boundary)
             extracted.append(subkey)
         key = tuple(extracted)
-        field_meta.mapping_key = key
-
+        ti_data_meta.mapping_key = key
     instance_id = self.mapper.mapping.get(key)
     if instance_id is None:
         key = ti.lang.kernel_impl.Kernel.ensure_compiled(self, *args)
@@ -382,7 +415,7 @@ def _launch_kernel(self, t_kernel, compiled_kernel_data, *args):
         needed = self.arg_metas[i].annotation
 
         # template
-        if needed == ti.template or isinstance(needed, ti.template):
+        if is_ti_template(needed):
             template_num += 1
             continue
 
@@ -429,7 +462,8 @@ def _launch_kernel(self, t_kernel, compiled_kernel_data, *args):
     try:
         prog = impl.get_runtime().prog
         if compiled_kernel_data is None:
-            compiled_kernel_data = prog.compile_kernel(prog.config(), prog.get_device_caps(), t_kernel)
+            compile_result = prog.compile_kernel(prog.config(), prog.get_device_caps(), t_kernel)
+            compiled_kernel_data = compile_result.compiled_kernel_data
         prog.launch_kernel(compiled_kernel_data, launch_ctx)
     except Exception as e:
         e = handle_exception_from_cpp(e)
@@ -438,19 +472,25 @@ def _launch_kernel(self, t_kernel, compiled_kernel_data, *args):
         raise e from None
 
 
+def _destroy_callback(ref: weakref.ReferenceType):
+    global TI_PROG_WEAKREF
+    TI_DATA_CACHE.clear()
+    for kernel in TO_EXT_ARR_FAST_MAP.values():
+        kernel._primal.mapper.mapping.clear()
+    TI_PROG_WEAKREF = None
+
+
 _to_pytorch_type_fast = functools.lru_cache(maxsize=None)(to_pytorch_type)
 TO_EXT_ARR_FAST_MAP = {}
 for data_type, func in (
-    (ti.lang.ScalarField, tensor_to_ext_arr),
-    (ti.lang.MatrixField, matrix_to_ext_arr),
-    (ti.lang.ScalarNdarray, ndarray_to_ext_arr),
-    (ti.lang.MatrixNdarray, ndarray_matrix_to_ext_arr),
+    (ti.ScalarField, tensor_to_ext_arr),
+    (ti.MatrixField, matrix_to_ext_arr),
+    (ti.ScalarNdarray, ndarray_to_ext_arr),
+    (ti.MatrixNdarray, ndarray_matrix_to_ext_arr),
 ):
     func = ti.kernel(func._primal.func)
     func._primal.launch_kernel = types.MethodType(_launch_kernel, func._primal)
     func._primal.ensure_compiled = types.MethodType(_ensure_compiled, func._primal)
-    if data_type is ti.lang.MatrixNdarray:
-        func = lambda ndarray, arr, as_vector, *, func=func: func(ndarray, arr, 1, as_vector)
     TO_EXT_ARR_FAST_MAP[data_type] = func
 
 
@@ -476,22 +516,32 @@ def ti_to_torch(
     Returns:
         torch.tensor: The result torch tensor.
     """
+    global TI_PROG_WEAKREF
+
+    # Keep track of taichi runtime to automatically clear cache if destroyed
+    if TI_PROG_WEAKREF is None:
+        TI_PROG_WEAKREF = weakref.ref(impl.get_runtime().prog, _destroy_callback)
+
     # Get metadata
-    field_id = id(value)
-    field_meta = FIELD_CACHE.get(field_id)
-    if field_meta is None:
-        field_meta = FieldMetadata(
-            value.ndim if isinstance(value, ti.lang.MatrixField) else 0, value.shape, value.dtype, None
-        )
-        if len(FIELD_CACHE) == MAX_CACHE_SIZE:
-            FIELD_CACHE.popitem(last=False)
-        FIELD_CACHE[field_id] = field_meta
+    ti_data_id = id(value)
+    ti_data_meta = TI_DATA_CACHE.get(ti_data_id)
+    if ti_data_meta is None:
+        if isinstance(value, ti.MatrixField):
+            ndim = value.ndim
+        elif isinstance(value, ti.Ndarray):
+            ndim = len(value.element_shape)
+        else:
+            ndim = 0
+        ti_data_meta = FieldMetadata(ndim, value.shape, value.dtype, None)
+        if len(TI_DATA_CACHE) == MAX_CACHE_SIZE:
+            TI_DATA_CACHE.popitem(last=False)
+        TI_DATA_CACHE[ti_data_id] = ti_data_meta
 
     # Make sure that the user-arguments are valid if requested
-    field_shape = field_meta.shape
-    is_1D_batch = len(field_shape) == 1
+    ti_data_shape = ti_data_meta.shape
+    is_1D_batch = len(ti_data_shape) == 1
     if not unsafe:
-        _field_shape = field_shape[::-1] if transpose else field_shape
+        _ti_data_shape = ti_data_shape[::-1] if transpose else ti_data_shape
         if is_1D_batch:
             if transpose and row_mask is not None:
                 gs.raise_exception("Cannot specify row mask for fields with 1D batch and `transpose=True`.")
@@ -503,7 +553,7 @@ def ti_to_torch(
                 is_out_of_bounds = False
             elif isinstance(mask, (int, np.integer)):
                 # Do not allow negative indexing for consistency with Taichi
-                is_out_of_bounds = not (0 <= mask < _field_shape[i])
+                is_out_of_bounds = not (0 <= mask < _ti_data_shape[i])
             elif isinstance(mask, torch.Tensor):
                 if not mask.ndim <= 1:
                     gs.raise_exception(f"Expecting 1D tensor for masks.")
@@ -514,7 +564,7 @@ def ti_to_torch(
                     mask_start, mask_end = min(mask), max(mask)
                 except ValueError:
                     gs.raise_exception(f"Expecting 1D tensor for masks.")
-                is_out_of_bounds = not (0 <= mask_start <= mask_end < _field_shape[i])
+                is_out_of_bounds = not (0 <= mask_start <= mask_end < _ti_data_shape[i])
             if is_out_of_bounds:
                 gs.raise_exception("Masks are out-of-range.")
 
@@ -538,20 +588,22 @@ def ti_to_torch(
     # Note that this is usually much faster than using a custom kernel to extract a slice.
     # The implementation is based on `taichi.lang.(ScalarField | MatrixField).to_torch`.
     is_metal = gs.device.type == "mps"
-    tc_dtype = _to_pytorch_type_fast(field_meta.dtype)
+    tc_dtype = _to_pytorch_type_fast(ti_data_meta.dtype)
     data_type = type(value)
-    if issubclass(data_type, (ti.lang.ScalarField, ti.lang.ScalarNdarray)):
-        out = torch.zeros(size=field_shape, dtype=tc_dtype, device="cpu" if is_metal else gs.device)
+    if issubclass(data_type, (ti.ScalarField, ti.ScalarNdarray)):
+        out = torch.zeros(size=ti_data_shape, dtype=tc_dtype, device="cpu" if is_metal else gs.device)
         TO_EXT_ARR_FAST_MAP[data_type](value, out)
-    elif issubclass(data_type, (ti.lang.MatrixField, ti.lang.MatrixNdarray)):
+    elif issubclass(data_type, ti.MatrixField):
         as_vector = value.m == 1
         shape_ext = (value.n,) if as_vector else (value.n, value.m)
-        out = torch.empty(field_shape + shape_ext, dtype=tc_dtype, device="cpu" if is_metal else gs.device)
+        out = torch.empty(ti_data_shape + shape_ext, dtype=tc_dtype, device="cpu" if is_metal else gs.device)
         TO_EXT_ARR_FAST_MAP[data_type](value, out, as_vector)
-    elif issubclass(data_type, ti.lang.VectorNdarray):
-        shape_ext = (value.n,)
-        out = torch.empty(field_shape + shape_ext, dtype=tc_dtype, device="cpu" if is_metal else gs.device)
-        TO_EXT_ARR_FAST_MAP[ti.lang.MatrixNdarray](value, out, True)
+    elif issubclass(data_type, (ti.VectorNdarray, ti.MatrixNdarray)):
+        layout_is_aos = 1
+        as_vector = issubclass(data_type, ti.VectorNdarray)
+        shape_ext = (value.n,) if as_vector else (value.n, value.m)
+        out = torch.empty(ti_data_shape + shape_ext, dtype=tc_dtype, device="cpu" if is_metal else gs.device)
+        TO_EXT_ARR_FAST_MAP[ti.MatrixNdarray](value, out, layout_is_aos, as_vector)
     else:
         gs.raise_exception(f"Unsupported type '{type(value)}'.")
     if is_metal:
@@ -562,7 +614,7 @@ def ti_to_torch(
     # Note that it is worth transposing here rather than outside this function, as it preserve row-major memory
     # alignment in case of advanced masking, which would spare computation later on if expected from the user.
     if transpose and not is_1D_batch:
-        out = out.movedim(out.ndim - field_meta.ndim - 1, 0)
+        out = out.movedim(out.ndim - ti_data_meta.ndim - 1, 0)
 
     # Extract slice if necessary.
     # Note that unsqueeze is MUCH faster than indexing with `[row_mask]` to keep batch dimensions,
@@ -584,7 +636,7 @@ def ti_to_torch(
         if not unsafe and is_out_of_bounds is None:
             for i, mask in enumerate((col_mask if transpose else row_mask,) if is_1D_batch else (row_mask, col_mask)):
                 # Do bounds analysis at this point because it skipped
-                if not (0 <= mask[0] <= mask[-1] < field_shape[i]):
+                if not (0 <= mask[0] <= mask[-1] < ti_data_shape[i]):
                     gs.raise_exception_from("Masks are out-of-range.", e)
 
     # Make sure that masks are 1D if all dimensions must be kept

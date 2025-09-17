@@ -246,6 +246,12 @@ class Collider:
             self._collider_info.vert_n_neighbors.from_numpy(vert_n_neighbors)
 
     def _init_max_contact_pairs(self, n_possible_pairs):
+        if self._solver._max_collision_pairs < n_possible_pairs:
+            gs.logger.warning(
+                f"max_collision_pairs {self._solver._max_collision_pairs} is"
+                f" smaller than the theoretical maximal possible pairs {n_possible_pairs}, it uses less memory"
+                f" but might lead to missing some collision pairs if there are too many collision pairs"
+            )
         max_collision_pairs = min(self._solver._max_collision_pairs, n_possible_pairs)
         max_contact_pairs = max_collision_pairs * self._collider_static_config.n_contacts_per_pair
         max_contact_pairs_broad = max_collision_pairs * self._collider_static_config.max_collision_pairs_broad_k
@@ -260,7 +266,10 @@ class Collider:
         if self._collider_static_config.has_terrain:
             solver = self._solver
             links_idx = solver.geoms_info.link_idx.to_numpy()[solver.geoms_info.type.to_numpy() == gs.GEOM_TYPE.TERRAIN]
-            entity = solver._entities[solver.links_info.entity_idx.to_numpy()[links_idx[0]]]
+            entity_idx = solver.links_info.entity_idx.to_numpy()[links_idx[0]]
+            if isinstance(entity_idx, np.ndarray):
+                entity_idx = entity_idx[0]
+            entity = solver._entities[entity_idx]
 
             scale = entity.terrain_scale.astype(gs.np_float)
             rc = np.array(entity.terrain_hf.shape, dtype=gs.np_int)
@@ -590,7 +599,9 @@ def collider_kernel_get_contacts(
     _B = collider_state.active_buffer.shape[1]
     n_contacts_max = gs.ti_int(0)
 
-    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    # this is a reduction operation (global max), we have to serialize it
+    # TODO: a good unittest and a better implementation from gstaichi for this kind of reduction
+    ti.loop_config(serialize=True)
     for i_b in range(_B):
         n_contacts = collider_state.n_contacts[i_b]
         if n_contacts > n_contacts_max:

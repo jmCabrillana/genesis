@@ -30,8 +30,8 @@ from genesis.options.morphs import URDF_FORMAT, MJCF_FORMAT, MESH_FORMATS, GLTF_
 REPOSITY_URL = "Genesis-Embodied-AI/Genesis"
 DEFAULT_BRANCH_NAME = "main"
 
-HUGGINGFACE_ASSETS_REVISION = "0c0bb46db0978a59524381194478cf390b3ff996"
-HUGGINGFACE_SNAPSHOT_REVISION = "b91f34811d7488b951e35a6d0176e94d24f24a88"
+HUGGINGFACE_ASSETS_REVISION = "f9d031501cba5e279f1fc77d4f3b9ccd9156ccf7"
+HUGGINGFACE_SNAPSHOT_REVISION = "95daab32a96d5e91cb3bef9725ad601de463053f"
 
 MESH_EXTENSIONS = (".mtl", *MESH_FORMATS, *GLTF_FORMATS, *USD_FORMATS)
 IMAGE_EXTENSIONS = (".png", ".jpg")
@@ -266,7 +266,7 @@ def assert_allclose(actual, desired, *, atol=None, rtol=None, tol=None, err_msg=
     if all(e.size == 0 for e in args):
         return
 
-    np.testing.assert_allclose(*args, atol=atol, rtol=rtol, err_msg=err_msg)
+    np.testing.assert_allclose(*map(np.squeeze, args), atol=atol, rtol=rtol, err_msg=err_msg)
 
 
 def assert_array_equal(actual, desired, *, err_msg=""):
@@ -491,6 +491,7 @@ def build_mujoco_sim(
     model.opt.solver = mj_solver
     model.opt.integrator = mj_integrator
     model.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+    model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_ISLAND
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_REFSAFE)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_GRAVITY)

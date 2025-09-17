@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import pytest
 import igl
@@ -6,6 +8,11 @@ import genesis as gs
 from genesis.utils.misc import tensor_to_array
 
 from .utils import assert_allclose, get_hf_dataset
+
+
+pytestmark = [
+    pytest.mark.field_only,
+]
 
 
 # Note that "session" scope must NOT be used because the material while be altered without copy when building the scene
@@ -173,7 +180,7 @@ def test_interior_tetrahedralized_vertex(fem_material, show_viewer, box_obj_path
     # Verify whether surface faces in the visualizer mesh matches the surface faces of the FEM entity
     rasterizer_context = scene.visualizer.context
     static_nodes = rasterizer_context.static_nodes
-    fem_node_mesh = static_nodes[fem.uid].mesh
+    fem_node_mesh = static_nodes[(0, fem.uid)].mesh
 
     (fem_node_primitive,) = fem_node_mesh.primitives
     fem_node_vertices = fem_node_primitive.positions
@@ -324,9 +331,12 @@ def test_sphere_fall_implicit_fem_sap_coupler(fem_material_linear, show_viewer):
         )
 
 
-# FIXME: Compilation is crashing on Apple Metal backend
 @pytest.mark.required
-def test_linear_corotated_sphere_fall_implicit_fem_sap_coupler(fem_material_linear_corotated, show_viewer):
+def test_linear_corotated_sphere_fall_implicit_fem_sap_coupler(fem_material_linear_corotated, backend, show_viewer):
+    # FIXME: Fix GsTaichi bug on Apple Metal due to SpirV compilation failure
+    if sys.platform == "darwin" and backend == gs.backend.gpu:
+        pytest.xfail("This test is broken on Mac OS because of a bug in GsTaichi.")
+
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=1.0 / 60.0,

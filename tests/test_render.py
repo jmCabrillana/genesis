@@ -1,3 +1,4 @@
+import io
 import itertools
 import os
 import re
@@ -9,11 +10,12 @@ import numpy as np
 import pyglet
 import pytest
 import torch
+from PIL import Image
 
 import genesis as gs
 import genesis.utils.geom as gu
 from genesis.utils import set_random_seed
-from genesis.utils.image_exporter import FrameImageExporter
+from genesis.utils.image_exporter import FrameImageExporter, as_grayscale_image
 from genesis.utils.misc import tensor_to_array
 
 from .conftest import IS_INTERACTIVE_VIEWER_AVAILABLE
@@ -87,12 +89,6 @@ def test_render_api(show_viewer, renderer_type, renderer):
 
     rgb_arrs, depth_arrs, seg_arrs, normal_arrs = [], [], [], []
     for rgb, depth, seg, normal in itertools.product((True, False), repeat=4):
-        if (seg or normal) and renderer_type in (
-            RENDERER_TYPE.BATCHRENDER_RASTERIZER,
-            RENDERER_TYPE.BATCHRENDER_RAYTRACER,
-        ):
-            # Depth map and segmentation maps are not supported by Madrona for now.
-            continue
         rgb_arr, depth_arr, seg_arr, normal_arr = camera.render(rgb=rgb, depth=depth, segmentation=seg, normal=normal)
         if rgb:
             rgb_arrs.append(tensor_to_array(rgb_arr).astype(np.float32))
@@ -289,15 +285,14 @@ def test_deterministic(tmp_path, show_viewer, tol):
 @pytest.mark.xfail(sys.platform == "darwin", raises=AssertionError, reason="Flaky on MacOS with CPU-based OpenGL")
 def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, renderer_type, renderer):
     CAM_RES = (256, 256)
-    DIFF_TOL = 0.02
+    DIFF_TOL = 0.01
     NUM_STEPS = 5
 
     IS_BATCHRENDER = renderer_type in (RENDERER_TYPE.BATCHRENDER_RASTERIZER, RENDERER_TYPE.BATCHRENDER_RAYTRACER)
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=0.02,
-            substeps=4,
+            dt=0.04,
         ),
         vis_options=gs.options.VisOptions(
             # Disable shadows systematically for Rasterizer because they are forcibly disabled on CPU backend anyway
@@ -333,6 +328,8 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
             pos=(1.5, 0.5, 1.5),
             lookat=(0.0, 0.0, 0.5),
             fov=45,
+            near=0.05,
+            far=100.0,
             env_idx=env_idx,
             GUI=show_viewer,
         )
@@ -341,6 +338,8 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
             pos=(1.5, -0.5, 1.5),
             lookat=(0.0, 0.0, 0.5),
             fov=45,
+            near=0.05,
+            far=100.0,
             env_idx=env_idx,
             GUI=show_viewer,
         )
@@ -348,9 +347,11 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
             res=CAM_RES,
             fov=45,
             env_idx=env_idx,
+            near=0.05,
+            far=100.0,
             GUI=show_viewer,
         )
-        cameras += [cam_0, cam_1, cam_2]
+        cameras += (cam_0, cam_1, cam_2)
     if IS_BATCHRENDER:
         scene.add_light(
             pos=(0.0, 0.0, 1.5),
@@ -371,10 +372,12 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
     scene.build(n_envs=n_envs, env_spacing=(4.0, 4.0))
 
     # Attach cameras
-    R = np.eye(3)
-    trans = np.array([0.1, 0.0, 0.1])
-    cam_2.attach(robot.get_link("Head_upper"), gu.trans_R_to_T(trans, R))
-    cam_1.follow_entity(robot)
+    for i in range(0, len(cameras), 3):
+        cam_0, cam_1, cam_2 = cameras[i : (i + 3)]
+        R = np.eye(3)
+        trans = np.array([0.1, 0.0, 0.2])
+        cam_2.attach(robot.get_link("Head_upper"), gu.trans_R_to_T(trans, R))
+        cam_1.follow_entity(robot)
 
     # Create image exporter
     exporter = FrameImageExporter(tmp_path)
@@ -405,47 +408,52 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
         if IS_BATCHRENDER:
             # Note that the individual cameras is rendered alone first on purpose to make sure it works
             rgba_1, depth_1, seg_1, normal_1 = cam_1.render(
-                rgb=True, depth=True, segmentation=False, colorize_seg=False, normal=False
+                rgb=True, depth=True, segmentation=True, colorize_seg=True, normal=True
             )
             rgba_all, depth_all, seg_all, normal_all = scene.render_all_cameras(
-                rgb=True, depth=True, segmentation=False, normal=False
+                rgb=True, depth=True, segmentation=True, colorize_seg=True, normal=True
             )
-            assert all(isinstance(img_data, torch.Tensor) for img_data in (rgba_1, depth_1))
-            assert all(isinstance(img_data, torch.Tensor) for img_data in (*rgba_all, *depth_all))
+            assert all(isinstance(img_data, torch.Tensor) for img_data in (rgba_1, depth_1, seg_1, normal_1))
+            assert all(
+                isinstance(img_data, torch.Tensor) for img_data in (*rgba_all, *depth_all, *seg_all, *normal_all)
+            )
         else:
             # Emulate batch rendering which is not supported natively
             colorize_seg = False
-            rgba_all, depth_all, _, _ = zip(
+            rgba_all, depth_all, seg_all, normal_all = zip(
                 *(
-                    camera.render(rgb=True, depth=True, segmentation=False, normal=False)
+                    camera.render(rgb=True, depth=True, segmentation=True, colorize_seg=True, normal=True)
                     for camera in scene._visualizer._cameras
                     if not camera.debug
                 )
             )
             if n_envs > 0:
-                rgba_all, depth_all = (
+                rgba_all, depth_all, seg_all, normal_all = (
                     tuple(np.swapaxes(np.stack(img_data, axis=0).reshape((n_envs, 3, *img_data[0].shape)), 0, 1))
-                    for img_data in (rgba_all, depth_all)
+                    for img_data in (rgba_all, depth_all, seg_all, normal_all)
                 )
-            rgba_1, depth_1 = rgba_all[1], depth_all[1]
+            rgba_1, depth_1, seg_1, normal_1 = rgba_all[1], depth_all[1], seg_all[1], normal_all[1]
 
         # Check that the dimensions are valid
         batch_shape = (*((n_envs,) if n_envs else ()), *CAM_RES)
         assert len(rgba_all) == len(depth_all) == 3
-        assert all(e.shape == (*batch_shape, 3) for e in (*rgba_all, rgba_1))
+        assert all(e.shape == (*batch_shape, 3) for e in (*rgba_all, *seg_all, *normal_all, rgba_1, seg_1, normal_1))
         assert all(e.shape == batch_shape for e in (*depth_all, depth_1))
 
         # Check that the camera whose output was rendered individually is matching batched output
         for img_data_1, img_data_2 in (
             (rgba_all[1], rgba_1),
             (depth_all[1], depth_1),
+            (seg_all[1], seg_1),
+            (normal_all[1], normal_1),
         ):
             assert_allclose(img_data_1, img_data_2, tol=gs.EPS)
 
         # Check that there is something to see here
-        depth_normalized_all = tuple(exporter._normalize_depth(torch.as_tensor(img_data)) for img_data in depth_all)
+        depth_normalized_all = tuple(as_grayscale_image(tensor_to_array(img_data)) for img_data in depth_all)
         frame_data = tuple(
-            tensor_to_array(img_data).astype(np.float32) for img_data in (*rgba_all, *depth_normalized_all)
+            tensor_to_array(img_data).astype(np.float32)
+            for img_data in (*rgba_all, *depth_normalized_all, *seg_all, *normal_all)
         )
         for img_data in frame_data:
             for img_data_i in img_data if n_envs else (img_data,):
@@ -453,8 +461,10 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
 
         # Export a few frames for later pixel-matching validation
         if i < 2:
-            exporter.export_frame_all_cameras(i, rgb=rgba_all, depth=depth_all)
-            exporter.export_frame_single_camera(i, cam_1.idx, rgb=rgba_1, depth=depth_1)
+            exporter.export_frame_all_cameras(i, rgb=rgba_all, depth=depth_all, segmentation=seg_all, normal=normal_all)
+            exporter.export_frame_single_camera(
+                i, cam_1.idx, rgb=rgba_1, depth=depth_1, segmentation=seg_1, normal=normal_1
+            )
 
         # Check that cameras are recording different part of the scene
         for rgb_diff in np.diff(frame_data[:3], axis=0):
@@ -462,11 +472,10 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
                 assert np.max(np.std(rgb_diff.reshape((-1, rgb_diff_i.shape[-1])), axis=0)) > 10.0
 
         # Check that images are changing over time.
-        # We expect atlest 2% difference between two consecutive frames.
+        # We expect sufficient difference between two consecutive frames.
         if frames_prev is not None:
             for img_data_prev, img_data in zip(frames_prev, frame_data):
-                diff = img_data_prev - img_data
-                assert np.count_nonzero(diff) > DIFF_TOL * diff.size
+                assert np.sum(np.abs(img_data_prev - img_data) > np.finfo(np.float32).eps) > DIFF_TOL * img_data.size
         frames_prev = frame_data
 
         # Add current frame to monitor video
@@ -483,13 +492,14 @@ def test_render_api_advanced(tmp_path, n_envs, show_viewer, png_snapshot, render
             assert f.read() == png_snapshot
 
 
+@pytest.mark.field_only
 @pytest.mark.parametrize(
     "renderer_type",
-    [RENDERER_TYPE.RASTERIZER],
+    [RENDERER_TYPE.RASTERIZER, RENDERER_TYPE.BATCHRENDER_RASTERIZER, RENDERER_TYPE.BATCHRENDER_RAYTRACER],
 )
-@pytest.mark.parametrize("segmentation_level", ["entity", "link"])
+@pytest.mark.parametrize("segmentation_level", ["entity", "link", "geom"])
 @pytest.mark.parametrize("particle_mode", ["visual", "particle"])
-def test_segmentation_map(segmentation_level, particle_mode, renderer_type, renderer):
+def test_segmentation_map(segmentation_level, particle_mode, renderer_type, renderer, show_viewer):
     """Test segmentation rendering."""
     scene = gs.Scene(
         fem_options=gs.options.FEMOptions(
@@ -548,11 +558,12 @@ def test_segmentation_map(segmentation_level, particle_mode, renderer_type, rend
         pos=(2.0, 0.0, 2.0),
         lookat=(0, 0, 0.5),
         fov=40,
+        GUI=show_viewer,
     )
     scene.build()
 
     seg_num = len(materials) + (2 if segmentation_level == "entity" else 3)
-    idx_dict = camera.get_segmentation_idx_dict()
+    idx_dict = scene.segmentation_idx_dict
     assert len(idx_dict) == seg_num
     comp_key = 0
     for seg_key in idx_dict.values():
@@ -563,36 +574,54 @@ def test_segmentation_map(segmentation_level, particle_mode, renderer_type, rend
     for i in range(2):
         scene.step()
         _, _, seg, _ = camera.render(rgb=False, depth=False, segmentation=True, colorize_seg=False, normal=False)
+        seg = tensor_to_array(seg)
         assert_array_equal(np.sort(np.unique(seg.flat)), np.arange(0, seg_num))
 
 
 @pytest.mark.required
 @pytest.mark.parametrize(
     "renderer_type",
-    [RENDERER_TYPE.RASTERIZER],
+    [RENDERER_TYPE.RASTERIZER, RENDERER_TYPE.BATCHRENDER_RASTERIZER, RENDERER_TYPE.BATCHRENDER_RAYTRACER],
 )
-def test_point_cloud(renderer, show_viewer):
+def test_point_cloud(renderer_type, renderer, show_viewer):
+    N_ENVS = 2
+    CAM_RES = (256, 256)
     CAMERA_DIST = 8.0
     OBJ_OFFSET = 10.0
     BOX_HALFSIZE = 1.0
     SPHERE_RADIUS = 1.0
+
+    IS_BATCHRENDER = renderer_type in (RENDERER_TYPE.BATCHRENDER_RASTERIZER, RENDERER_TYPE.BATCHRENDER_RAYTRACER)
+    BATCH_SHAPE = (N_ENVS,) if N_ENVS > 0 and IS_BATCHRENDER else ()
 
     scene = gs.Scene(
         renderer=renderer,
         show_viewer=show_viewer,
         show_FPS=False,
     )
+    if renderer_type in (RENDERER_TYPE.BATCHRENDER_RASTERIZER, RENDERER_TYPE.BATCHRENDER_RAYTRACER):
+        scene.add_light(
+            pos=(0.0, 0.0, 1.5),
+            dir=(1.0, 1.0, -2.0),
+            directional=True,
+            castshadow=True,
+            cutoff=45.0,
+            intensity=0.5,
+        )
+        scene.add_light(
+            pos=(4.0, -4.0, 4.0),
+            dir=(-1.0, 1.0, -1.0),
+            directional=False,
+            castshadow=True,
+            cutoff=45.0,
+            intensity=0.5,
+        )
     scene.add_entity(
         morph=gs.morphs.Sphere(
             pos=(0.0, OBJ_OFFSET, 0.0),
             radius=SPHERE_RADIUS,
             fixed=True,
         ),
-    )
-    camera_sphere = scene.add_camera(
-        pos=(0.0, OBJ_OFFSET, CAMERA_DIST),
-        lookat=(0.0, OBJ_OFFSET, 0.0),
-        GUI=show_viewer,
     )
     scene.add_entity(
         morph=gs.morphs.Box(
@@ -601,32 +630,45 @@ def test_point_cloud(renderer, show_viewer):
             fixed=True,
         )
     )
+    camera_sphere = scene.add_camera(
+        res=CAM_RES,
+        pos=(0.0, OBJ_OFFSET, CAMERA_DIST),
+        lookat=(0.0, OBJ_OFFSET, 0.0),
+        near=2.0,
+        far=15.0,
+        GUI=show_viewer,
+    )
     camera_box_1 = scene.add_camera(
+        res=CAM_RES,
         pos=(0.0, -OBJ_OFFSET, CAMERA_DIST),
         lookat=(0.0, -OBJ_OFFSET, 0.0),
+        near=2.0,
+        far=15.0,
         GUI=show_viewer,
     )
     camera_box_2 = scene.add_camera(
+        res=CAM_RES,
         pos=np.array((CAMERA_DIST, CAMERA_DIST - OBJ_OFFSET, CAMERA_DIST)),
         lookat=(0.0, -OBJ_OFFSET, 0.0),
+        near=2.0,
+        far=15.0,
         GUI=show_viewer,
     )
-    for camera in scene.visualizer.cameras:
-        camera._near = 2.0
-        camera._far = 15.0
-    scene.build()
+    scene.build(n_envs=N_ENVS)
 
     if show_viewer:
         for camera in scene.visualizer.cameras:
             camera.render(rgb=True, depth=True)
 
     point_cloud, mask = camera_box_1.render_pointcloud(world_frame=False)
+    assert point_cloud.shape == (*BATCH_SHAPE, *CAM_RES, 3)
     point_cloud = point_cloud[mask]
     assert_allclose(CAMERA_DIST - point_cloud[:, 2], BOX_HALFSIZE, atol=1e-4)
     assert np.all(-BOX_HALFSIZE <= point_cloud[:, :2].min(axis=0))
     assert np.all(point_cloud[:, :2].max(axis=0) <= BOX_HALFSIZE)
 
     point_cloud, mask = camera_box_2.render_pointcloud(world_frame=False)
+    assert point_cloud.shape == (*BATCH_SHAPE, *CAM_RES, 3)
     point_cloud = point_cloud[mask]
     point_cloud = point_cloud @ gu.z_up_to_R(np.array((1.0, 1.0, 1.0)), np.array((0.0, 0.0, 1.0))).T
     point_cloud -= np.array((CAMERA_DIST, CAMERA_DIST, CAMERA_DIST))
@@ -635,12 +677,14 @@ def test_point_cloud(renderer, show_viewer):
     assert_allclose(np.linalg.norm(point_cloud, ord=float("inf"), axis=-1), BOX_HALFSIZE, atol=tol)
 
     point_cloud, mask = camera_box_2.render_pointcloud(world_frame=True)
+    assert point_cloud.shape == (*BATCH_SHAPE, *CAM_RES, 3)
     point_cloud = point_cloud[mask]
     point_cloud += np.array((0.0, OBJ_OFFSET, 0.0))
     assert_allclose(np.linalg.norm(point_cloud, ord=float("inf"), axis=-1), BOX_HALFSIZE, atol=tol)
 
     # It is not possible to get higher accuracy because of tesselation
     point_cloud, mask = camera_sphere.render_pointcloud(world_frame=False)
+    assert point_cloud.shape == (*BATCH_SHAPE, *CAM_RES, 3)
     point_cloud = point_cloud[mask]
     assert_allclose(np.linalg.norm((0.0, 0.0, CAMERA_DIST) - point_cloud, axis=-1), SPHERE_RADIUS, atol=1e-2)
 
@@ -734,8 +778,11 @@ def test_interactive_viewer_key_press(tmp_path, monkeypatch, png_snapshot, show_
         viewer_options=gs.options.ViewerOptions(
             # Force screen-independent low-quality resolution when running unit tests for consistency
             res=(640, 480),
-            # Enable running in background thread if supported by the platform
-            run_in_thread=sys.platform == "linux",
+            # Enable running in background thread if supported by the platform.
+            # Note that windows is not supported because it would trigger the following exception if some previous tests
+            # was only using rasterizer without interactive viewer:
+            # 'EventLoop.run() must be called from the same thread that imports pyglet.app'.
+            run_in_thread=(sys.platform == "linux"),
         ),
         show_viewer=True,
     )
@@ -784,6 +831,8 @@ def test_interactive_viewer_key_press(tmp_path, monkeypatch, png_snapshot, show_
     [RENDERER_TYPE.RASTERIZER],
 )
 def test_render_planes(tmp_path, png_snapshot, renderer):
+    CAM_RES = (256, 256)
+
     for test_idx, (plane_size, tile_size) in enumerate(
         (
             ((3, 4.5), (0.5, 0.75)),
@@ -791,7 +840,6 @@ def test_render_planes(tmp_path, png_snapshot, renderer):
             ((4.0, 4.0), (1.0, 1.0)),
         )
     ):
-        CAM_RES = (256, 256)
         scene = gs.Scene(
             renderer=renderer,
         )
@@ -814,3 +862,120 @@ def test_render_planes(tmp_path, png_snapshot, renderer):
     for image_file in sorted(tmp_path.rglob("*.png")):
         with open(image_file, "rb") as f:
             assert f.read() == png_snapshot
+
+
+@pytest.mark.field_only
+@pytest.mark.required
+@pytest.mark.parametrize("renderer_type", [RENDERER_TYPE.RASTERIZER])
+@pytest.mark.skipif(not IS_INTERACTIVE_VIEWER_AVAILABLE, reason="Interactive viewer not supported on this platform.")
+def test_batch_deformable_render(tmp_path, monkeypatch, png_snapshot):
+    CAM_RES = (640, 480)
+
+    # Disable text rendering as it is messing up with pixel matching when using old CPU-based Mesa driver
+    monkeypatch.setattr("genesis.ext.pyrender.renderer.Renderer.render_texts", lambda *args, **kwargs: None)
+
+    # Increase pixel matching tolerance.
+    # We don't care about "perfect" match here and it is changing when particules are involved.
+    png_snapshot.extension._std_err_threshold = 10.0
+
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(
+            dt=5e-4,
+            substeps=10,
+        ),
+        pbd_options=gs.options.PBDOptions(
+            particle_size=1e-2,
+        ),
+        mpm_options=gs.options.MPMOptions(
+            lower_bound=(-1.0, -1.0, -0.2),
+            upper_bound=(1.0, 1.0, 1.0),
+        ),
+        sph_options=gs.options.SPHOptions(
+            lower_bound=(-0.5, -0.5, 0.0),
+            upper_bound=(0.5, 0.5, 1),
+            particle_size=0.01,
+        ),
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(6.0, 0.0, 4.0),
+            camera_lookat=(0.0, 0.0, 0.0),
+            camera_fov=40,
+            res=CAM_RES,
+            run_in_thread=(sys.platform == "linux"),
+        ),
+        vis_options=gs.options.VisOptions(
+            show_world_frame=True,
+            visualize_mpm_boundary=True,
+            visualize_sph_boundary=True,
+        ),
+        show_viewer=True,
+    )
+
+    plane = scene.add_entity(
+        morph=gs.morphs.Plane(),
+        material=gs.materials.Rigid(
+            needs_coup=True,
+            coup_friction=0.0,
+        ),
+    )
+    cube = scene.add_entity(
+        morph=gs.morphs.Box(
+            pos=(0.5, 0.5, 0.2),
+            size=(0.2, 0.2, 0.2),
+            euler=(30, 40, 0),
+            fixed=True,
+        ),
+        material=gs.materials.Rigid(
+            needs_coup=True,
+            coup_friction=0.0,
+        ),
+    )
+    cloth = scene.add_entity(
+        morph=gs.morphs.Mesh(
+            file="meshes/cloth.obj",
+            scale=1.0,
+            pos=(0.5, 0.5, 0.5),
+            euler=(180.0, 0.0, 0.0),
+        ),
+        material=gs.materials.PBD.Cloth(),
+        surface=gs.surfaces.Default(
+            color=(0.2, 0.4, 0.8, 1.0),
+        ),
+    )
+    worm = scene.add_entity(
+        morph=gs.morphs.Mesh(
+            file="meshes/worm/worm.obj",
+            pos=(0.3, 0.3, 0.001),
+            scale=0.1,
+            euler=(90, 0, 0),
+        ),
+        material=gs.materials.MPM.Muscle(
+            E=5e5,
+            nu=0.45,
+            rho=10000.0,
+            model="neohooken",
+            n_groups=4,
+        ),
+    )
+    liquid = scene.add_entity(
+        morph=gs.morphs.Box(
+            pos=(0.0, 0.0, 0.65),
+            size=(0.4, 0.4, 0.4),
+        ),
+        material=gs.materials.SPH.Liquid(),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.8, 1.0),
+            vis_mode="particle",
+        ),
+    )
+    scene.build(n_envs=4, env_spacing=(2.0, 2.0))
+
+    pyrender_viewer = scene.visualizer.viewer._pyrender_viewer
+    assert pyrender_viewer.is_active
+    rgb_arr, *_ = pyrender_viewer.render_offscreen(
+        pyrender_viewer._camera_node, pyrender_viewer._renderer, rgb=True, depth=False, seg=False, normal=False
+    )
+
+    img = Image.fromarray(rgb_arr)
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    assert buffer.getvalue() == png_snapshot
