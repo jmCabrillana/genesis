@@ -16,7 +16,7 @@ num_cubes = args.num_cubes
 cpu = args.cpu
 backend = gs.cpu if cpu else gs.gpu
 
-gs.init(backend=backend, precision="32")
+gs.init(backend=backend, precision="32", debug=True)
 
 scene = gs.Scene(
     sim_options=gs.options.SimOptions(
@@ -26,7 +26,7 @@ scene = gs.Scene(
         box_box_detection=False,
         max_collision_pairs=1000,
         use_gjk_collision=True,
-        enable_mujoco_compatibility=False,
+        enable_mujoco_compatibility=True,
     ),
     viewer_options=gs.options.ViewerOptions(
         camera_pos=(0, -5.5, 2.5),
@@ -34,7 +34,7 @@ scene = gs.Scene(
         camera_fov=30,
         max_FPS=60,
     ),
-    show_viewer=True,
+    show_viewer=False,
 )
 
 plane = scene.add_entity(gs.morphs.Plane(pos=(0, 0, 0)))
@@ -53,8 +53,13 @@ for i in range(num_cubes):
         box = scene.add_entity(
             gs.morphs.Box(size=box_size * vec_one, pos=box_pos_offset + box_spacing * np.array([i + 0.5 * j, 0, j])),
         )
+        
+cam = scene.add_camera(model="pinhole", res=(1024, 1024), pos=(0, -5.5, 2.5), lookat=(0, 0.0, 1.5), fov=30)
 
 scene.build()
 
+cam.start_recording()
 for i in range(1000):
     scene.step()
+    cam.render()
+cam.stop_recording(save_to_filename="pyramid.mp4", fps=60)

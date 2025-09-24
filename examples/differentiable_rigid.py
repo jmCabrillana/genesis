@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(seed=0, precision="32", logging_level="info")
+    gs.init(seed=0, precision="32", logging_level="info", backend=gs.cpu)
 
     ########################## create a scene ##########################
     dt = 1e-2
@@ -28,7 +28,7 @@ def main():
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=dt, substeps=substeps, requires_grad=True, gravity=(0, 0, -1)  # disable gravity
+            dt=dt, substeps=substeps, requires_grad=False, gravity=(0, 0, -1)  # disable gravity
         ),
         rigid_options=gs.options.RigidOptions(
             enable_collision=False,  # disable collision for now
@@ -65,6 +65,9 @@ def main():
         surface=gs.surfaces.Default(
             color=(0.0, 0.9, 0.0, 0.5),
         ),
+    )
+    franka = scene.add_entity(
+        gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"),
     )
 
     ########################## cameras ##########################

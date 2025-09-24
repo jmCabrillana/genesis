@@ -145,6 +145,7 @@ class StructConstraintState:
     qfrc_constraint: V_ANNOTATION
     qacc: V_ANNOTATION
     qacc_ws: V_ANNOTATION
+    qacc_smooth: V_ANNOTATION
     qacc_prev: V_ANNOTATION
     cost_ws: V_ANNOTATION
     gauss: V_ANNOTATION
@@ -219,6 +220,7 @@ def get_constraint_state(constraint_solver, solver):
         "qfrc_constraint": V(dtype=gs.ti_float, shape=solver._batch_shape(solver.n_dofs_)),
         "qacc": V(dtype=gs.ti_float, shape=solver._batch_shape(solver.n_dofs_)),
         "qacc_ws": V(dtype=gs.ti_float, shape=solver._batch_shape(solver.n_dofs_)),
+        "qacc_smooth": V(dtype=gs.ti_float, shape=solver._batch_shape(solver.n_dofs_)),
         "qacc_prev": V(dtype=gs.ti_float, shape=solver._batch_shape(solver.n_dofs_)),
         "cost_ws": V(gs.ti_float, shape=solver._batch_shape()),
         "gauss": V(gs.ti_float, shape=solver._batch_shape()),
@@ -1345,6 +1347,7 @@ class StructLinksState:
 
 def get_links_state(solver):
     shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_links_))
+    shape_ = solver._batch_shape((solver.n_links_,))
     kwargs = {
         "cinr_inertial": V(dtype=gs.ti_mat3, shape=shape),
         "cinr_pos": V(dtype=gs.ti_vec3, shape=shape),
@@ -1368,8 +1371,6 @@ def get_links_state(solver):
         "cd_vel": V(dtype=gs.ti_vec3, shape=shape),
         "mass_sum": V(dtype=gs.ti_float, shape=shape),
         "root_COM": V(dtype=gs.ti_vec3, shape=shape),
-        "mass_shift": V(dtype=gs.ti_float, shape=shape),
-        "i_pos_shift": V(dtype=gs.ti_vec3, shape=shape),
         "cacc_ang": V(dtype=gs.ti_vec3, shape=shape),
         "cacc_lin": V(dtype=gs.ti_vec3, shape=shape),
         "cfrc_ang": V(dtype=gs.ti_vec3, shape=shape),
@@ -1378,6 +1379,9 @@ def get_links_state(solver):
         "cfrc_applied_vel": V(dtype=gs.ti_vec3, shape=shape),
         "contact_force": V(dtype=gs.ti_vec3, shape=shape),
         "hibernated": V(dtype=gs.ti_int, shape=shape),
+        # These are only updated by user input
+        "mass_shift": V(dtype=gs.ti_float, shape=shape_),
+        "i_pos_shift": V(dtype=gs.ti_vec3, shape=shape_),
     }
 
     if use_ndarray:
@@ -1609,11 +1613,13 @@ class StructGeomsState:
     min_buffer_idx: V_ANNOTATION
     max_buffer_idx: V_ANNOTATION
     hibernated: V_ANNOTATION
+    # These are only updated by user input
     friction_ratio: V_ANNOTATION
 
 
 def get_geoms_state(solver):
     shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_geoms_))
+    shape_ = solver._batch_shape((solver.n_geoms_,))
     kwargs = {
         "pos": V(dtype=gs.ti_vec3, shape=shape),
         "quat": V(dtype=gs.ti_vec4, shape=shape),
@@ -1623,7 +1629,7 @@ def get_geoms_state(solver):
         "min_buffer_idx": V(dtype=gs.ti_int, shape=shape),
         "max_buffer_idx": V(dtype=gs.ti_int, shape=shape),
         "hibernated": V(dtype=gs.ti_int, shape=shape),
-        "friction_ratio": V(dtype=gs.ti_float, shape=shape),
+        "friction_ratio": V(dtype=gs.ti_float, shape=shape_),
     }
 
     if use_ndarray:
