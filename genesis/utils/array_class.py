@@ -52,6 +52,7 @@ class StructRigidGlobalInfo:
     n_equalities_candidate: V_ANNOTATION
     hibernation_thresh_acc: V_ANNOTATION
     hibernation_thresh_vel: V_ANNOTATION
+    max_n_links_per_entity: V_ANNOTATION
 
 
 def get_rigid_global_info(solver):
@@ -80,6 +81,9 @@ def get_rigid_global_info(solver):
     hibernation_thresh_acc.fill(getattr(solver, "_hibernation_thresh_acc", 0.0))
     hibernation_thresh_vel = V(dtype=gs.ti_float, shape=())
     hibernation_thresh_vel.fill(getattr(solver, "_hibernation_thresh_vel", 0.0))
+    
+    max_n_links_per_entity = V(dtype=gs.ti_int, shape=())
+    max_n_links_per_entity.fill(getattr(solver, "_max_n_links_per_entity", 0))
 
     # Basic fields
     kwargs = {
@@ -113,6 +117,7 @@ def get_rigid_global_info(solver):
         "n_equalities_candidate": n_equalities_candidate,
         "hibernation_thresh_acc": hibernation_thresh_acc,
         "hibernation_thresh_vel": hibernation_thresh_vel,
+        "max_n_links_per_entity": max_n_links_per_entity,
     }
 
     if use_ndarray:
@@ -151,7 +156,36 @@ def _init_mass_mat_data(obj, solver):
     obj.mass_mat_L.fill(0)
     obj.mass_mat_D_inv.fill(0)
     obj.meaninertia.fill(0)
-
+    
+@dataclasses.dataclass
+class StructRigidGlobalInfoAdjointCache:
+    qpos: V_ANNOTATION
+    mass_mat: V_ANNOTATION
+    mass_mat_L: V_ANNOTATION
+    mass_mat_D_inv: V_ANNOTATION
+    _mass_mat_mask: V_ANNOTATION
+    
+def get_rigid_global_info_adjoint_cache(solver):
+    f_batch = solver._batch_shape
+    n_frame = solver._sim.substeps_local + 1
+    
+    kwargs = {
+        "qpos": V(dtype=gs.ti_float, shape=f_batch((n_frame, solver.n_qs_))),
+        "mass_mat": V(dtype=gs.ti_float, shape=f_batch((n_frame, solver.n_dofs_, solver.n_dofs_))),
+        "mass_mat_L": V(dtype=gs.ti_float, shape=f_batch((n_frame, solver.n_dofs_, solver.n_dofs_))),
+        "mass_mat_D_inv": V(dtype=gs.ti_float, shape=f_batch((n_frame, solver.n_dofs_))),
+        "_mass_mat_mask": V(dtype=gs.ti_int, shape=f_batch((n_frame, solver.n_entities_))),
+    }
+    if use_ndarray:
+        return StructRigidGlobalInfoAdjointCache(**kwargs)
+    else:
+        @ti.data_oriented
+        class ClassRigidGlobalInfoAdjointCache:
+            def __init__(self):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+        return ClassRigidGlobalInfoAdjointCache()
+    
 
 # =========================================== Constraint ===========================================
 
@@ -1341,6 +1375,49 @@ def get_dofs_state(solver):
 
         return ClassDofsState()
 
+def get_dofs_state_adjoint_cache(solver):
+    shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_dofs_))
+    kwargs = {
+        "force": V(dtype=gs.ti_float, shape=shape),
+        "qf_bias": V(dtype=gs.ti_float, shape=shape),
+        "qf_passive": V(dtype=gs.ti_float, shape=shape),
+        "qf_actuator": V(dtype=gs.ti_float, shape=shape),
+        "qf_applied": V(dtype=gs.ti_float, shape=shape),
+        "act_length": V(dtype=gs.ti_float, shape=shape),
+        "pos": V(dtype=gs.ti_float, shape=shape),
+        "vel": V(dtype=gs.ti_float, shape=shape),
+        "vel_prev": V(dtype=gs.ti_float, shape=shape),
+        "acc": V(dtype=gs.ti_float, shape=shape),
+        "acc_smooth": V(dtype=gs.ti_float, shape=shape),
+        "qf_smooth": V(dtype=gs.ti_float, shape=shape),
+        "qf_constraint": V(dtype=gs.ti_float, shape=shape),
+        "cdof_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cdof_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "cdofvel_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cdofvel_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "cdofd_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cdofd_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "f_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "f_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "ctrl_force": V(dtype=gs.ti_float, shape=shape),
+        "ctrl_pos": V(dtype=gs.ti_float, shape=shape),
+        "ctrl_vel": V(dtype=gs.ti_float, shape=shape),
+        "ctrl_mode": V(dtype=gs.ti_int, shape=shape),
+        "hibernated": V(dtype=gs.ti_int, shape=shape),
+    }
+
+    if use_ndarray:
+        return StructDofsState(**kwargs)
+    else:
+
+        @ti.data_oriented
+        class ClassDofsStateAdjointCache:
+            def __init__(self):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        return ClassDofsStateAdjointCache()
+
 
 # =========================================== LinksState and LinksInfo ===========================================
 
@@ -1488,6 +1565,55 @@ def get_links_info(solver):
 
         return ClassLinksInfo()
 
+def get_links_state_adjoint_cache(solver):
+    shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_links_))
+    kwargs = {
+        "cinr_inertial": V(dtype=gs.ti_mat3, shape=shape),
+        "cinr_pos": V(dtype=gs.ti_vec3, shape=shape),
+        "cinr_quat": V(dtype=gs.ti_vec4, shape=shape),
+        "cinr_mass": V(dtype=gs.ti_float, shape=shape),
+        "crb_inertial": V(dtype=gs.ti_mat3, shape=shape),
+        "crb_pos": V(dtype=gs.ti_vec3, shape=shape),
+        "crb_quat": V(dtype=gs.ti_vec4, shape=shape),
+        "crb_mass": V(dtype=gs.ti_float, shape=shape),
+        "cdd_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "cdd_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "pos": V(dtype=gs.ti_vec3, shape=shape),
+        "quat": V(dtype=gs.ti_vec4, shape=shape),
+        "i_pos": V(dtype=gs.ti_vec3, shape=shape),
+        "i_quat": V(dtype=gs.ti_vec4, shape=shape),
+        "j_pos": V(dtype=gs.ti_vec3, shape=shape),
+        "j_quat": V(dtype=gs.ti_vec4, shape=shape),
+        "j_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "j_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cd_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cd_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "mass_sum": V(dtype=gs.ti_float, shape=shape),
+        "root_COM": V(dtype=gs.ti_vec3, shape=shape),
+        "mass_shift": V(dtype=gs.ti_float, shape=shape),
+        "i_pos_shift": V(dtype=gs.ti_vec3, shape=shape),
+        "cacc_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cacc_lin": V(dtype=gs.ti_vec3, shape=shape),
+        "cfrc_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cfrc_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "cfrc_applied_ang": V(dtype=gs.ti_vec3, shape=shape),
+        "cfrc_applied_vel": V(dtype=gs.ti_vec3, shape=shape),
+        "contact_force": V(dtype=gs.ti_vec3, shape=shape),
+        "hibernated": V(dtype=gs.ti_int, shape=shape),
+    }
+
+    if use_ndarray:
+        return StructLinksState(**kwargs)
+    else:
+
+        @ti.data_oriented
+        class ClassLinksStateAdjointCache:
+            def __init__(self):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        return ClassLinksStateAdjointCache()
+
 
 # =========================================== JointsInfo and JointsState ===========================================
 
@@ -1554,6 +1680,25 @@ def get_joints_state(solver):
                     setattr(self, k, v)
 
         return ClassJointsState()
+
+def get_joints_state_adjoint_cache(solver):
+    shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_joints_))
+    kwargs = {
+        "xanchor": V(dtype=gs.ti_vec3, shape=shape),
+        "xaxis": V(dtype=gs.ti_vec3, shape=shape),
+    }
+
+    if use_ndarray:
+        return StructJointsState(**kwargs)
+    else:
+
+        @ti.data_oriented
+        class ClassJointsStateAdjointCache:
+            def __init__(self):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        return ClassJointsStateAdjointCache()
 
 
 # =========================================== GeomsInfo and GeomsState ===========================================
@@ -1675,6 +1820,32 @@ def get_geoms_state(solver):
                     setattr(self, k, v)
 
         return ClassGeomsState()
+    
+
+def get_geoms_state_adjoint_cache(solver):
+    shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_geoms_))
+    kwargs = {
+        "pos": V(dtype=gs.ti_vec3, shape=shape),
+        "quat": V(dtype=gs.ti_vec4, shape=shape),
+        "aabb_min": V(dtype=gs.ti_vec3, shape=shape),
+        "aabb_max": V(dtype=gs.ti_vec3, shape=shape),
+        "verts_updated": V(dtype=gs.ti_int, shape=shape),
+        "min_buffer_idx": V(dtype=gs.ti_int, shape=shape),
+        "max_buffer_idx": V(dtype=gs.ti_int, shape=shape),
+        "hibernated": V(dtype=gs.ti_int, shape=shape),
+    }
+
+    if use_ndarray:
+        return StructGeomsState(**kwargs)
+    else:
+
+        @ti.data_oriented
+        class ClassGeomsStateAdjointCache:
+            def __init__(self):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        return ClassGeomsStateAdjointCache()
 
 
 # =========================================== VertsInfo ===========================================
@@ -2162,6 +2333,14 @@ class DataManager:
 
         self.entities_info = get_entities_info(solver)
         self.entities_state = get_entities_state(solver)
+        
+        if solver._static_rigid_sim_config.requires_grad:
+            # Data structures required for backward pass
+            self.rigid_global_info_adjoint_cache = get_rigid_global_info_adjoint_cache(solver)
+            self.dofs_state_adjoint_cache = get_dofs_state_adjoint_cache(solver)
+            self.links_state_adjoint_cache = get_links_state_adjoint_cache(solver)
+            self.joints_state_adjoint_cache = get_joints_state_adjoint_cache(solver)
+            self.geoms_state_adjoint_cache = get_geoms_state_adjoint_cache(solver)
 
 
 # we will use struct for DofsState and DofsInfo after Hugh adds array_struct feature to gstaichi
@@ -2195,3 +2374,8 @@ ConstraintState = ti.template() if not use_ndarray else StructConstraintState
 GJKState = ti.template() if not use_ndarray else StructGJKState
 SDFInfo = ti.template() if not use_ndarray else StructSDFInfo
 ContactIslandState = ti.template() if not use_ndarray else StructContactIslandState
+RigidGlobalInfoAdjointCache = ti.template() if not use_ndarray else StructRigidGlobalInfoAdjointCache
+DofsStateAdjointCache = ti.template() if not use_ndarray else StructDofsState
+LinksStateAdjointCache = ti.template() if not use_ndarray else StructLinksState
+JointsStateAdjointCache = ti.template() if not use_ndarray else StructJointsState
+GeomsStateAdjointCache = ti.template() if not use_ndarray else StructGeomsState

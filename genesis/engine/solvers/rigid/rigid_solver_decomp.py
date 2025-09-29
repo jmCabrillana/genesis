@@ -201,6 +201,8 @@ class RigidSolver(Solver):
         self._n_vverts = self.n_vverts
         self._n_entities = self.n_entities
         self._n_equalities = self.n_equalities
+        
+        self._max_n_links_per_entity = self.max_n_links_per_entity
 
         self._geoms = self.geoms
         self._vgeoms = self.vgeoms
@@ -267,6 +269,7 @@ class RigidSolver(Solver):
             n_equalities_candidate=self.n_equalities_candidate,
             hibernation_thresh_acc=getattr(self, "_hibernation_thresh_acc", 0.0),
             hibernation_thresh_vel=getattr(self, "_hibernation_thresh_vel", 0.0),
+            requires_grad=getattr(self._sim.options, "requires_grad", False),
         )
 
         # when the migration is finished, we will remove the about two lines
@@ -2501,6 +2504,12 @@ class RigidSolver(Solver):
         if self.is_built:
             return self._n_links
         return len(self.links)
+    
+    @property
+    def max_n_links_per_entity(self):
+        if self.is_built:
+            return self._max_n_links_per_entity
+        return max([len(entity.links) for entity in self._entities]) if len(self._entities) > 0 else 0
 
     @property
     def n_joints(self):
@@ -4701,40 +4710,24 @@ def func_forward_kinematics(
     static_rigid_sim_config: ti.template(),
 ):
     n_entities = entities_info.n_links.shape[0]
-    if ti.static(static_rigid_sim_config.use_hibernation):
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_e_ in range(rigid_global_info.n_awake_entities[i_b]):
-            i_e = rigid_global_info.awake_entities[i_e_, i_b]
-            func_forward_kinematics_entity(
-                i_e,
-                i_b,
-                links_state,
-                links_info,
-                joints_state,
-                joints_info,
-                dofs_state,
-                dofs_info,
-                entities_info,
-                rigid_global_info,
-                static_rigid_sim_config,
-            )
-    else:
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_e in range(n_entities):
-            func_forward_kinematics_entity(
-                i_e,
-                i_b,
-                links_state,
-                links_info,
-                joints_state,
-                joints_info,
-                dofs_state,
-                dofs_info,
-                entities_info,
-                rigid_global_info,
-                static_rigid_sim_config,
-            )
-
+    for i_e_ in (range(rigid_global_info.n_awake_entities[i_b]) if ti.static(static_rigid_sim_config.use_hibernation) else range(n_entities)):
+        i_e = rigid_global_info.awake_entities[i_e_, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else i_e_
+        
+        func_forward_kinematics_entity(
+            i_e,
+            i_b,
+            links_state,
+            links_info,
+            joints_state,
+            joints_info,
+            dofs_state,
+            dofs_info,
+            entities_info,
+            rigid_global_info,
+            static_rigid_sim_config,
+            False,
+        )
+        
 
 @ti.func
 def func_forward_velocity(
@@ -4825,8 +4818,11 @@ def func_forward_kinematics_entity(
     entities_info: array_class.EntitiesInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
 ):
-    for i_l in range(entities_info.link_start[i_e], entities_info.link_end[i_e]):
+    # Becomes static loop in backward pass, because we assume this loop is an inner loop
+    for i_l0 in range(entities_info.link_start[i_e], entities_info.link_end[i_e]) if ti.static(not is_backward) else ti.static(range(rigid_global_info.max_n_links_per_entity)):
+        i_l = i_l0 if ti.static(not is_backward) else i_l0 + entities_info.link_start[i_e]
         I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
 
         pos = links_info.pos[I_l]
