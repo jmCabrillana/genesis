@@ -82,9 +82,6 @@ def get_rigid_global_info(solver):
     hibernation_thresh_vel = V(dtype=gs.ti_float, shape=())
     hibernation_thresh_vel.fill(getattr(solver, "_hibernation_thresh_vel", 0.0))
     
-    max_n_links_per_entity = V(dtype=gs.ti_int, shape=())
-    max_n_links_per_entity.fill(getattr(solver, "_max_n_links_per_entity", 0))
-
     # Basic fields
     kwargs = {
         "n_awake_dofs": V(dtype=gs.ti_int, shape=f_batch()),
@@ -117,7 +114,6 @@ def get_rigid_global_info(solver):
         "n_equalities_candidate": n_equalities_candidate,
         "hibernation_thresh_acc": hibernation_thresh_acc,
         "hibernation_thresh_vel": hibernation_thresh_vel,
-        "max_n_links_per_entity": max_n_links_per_entity,
     }
 
     if use_ndarray:
