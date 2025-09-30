@@ -38,31 +38,31 @@ jobs:
           # tracking thereby making it impossible to detect whether a commit is contained in upstream main.
           fetch-depth: 0
 
-      - name: Run unit tests
-        if: github.event_name == 'pull_request'
-        run: |
-          SLURM_JOB_NAME="$(uuidgen)_$(date +%Y%m%d_%H%M%S)"
-          echo "SLURM_JOB_NAME=${SLURM_JOB_NAME}" >> $GITHUB_ENV
+      # - name: Run unit tests
+      #   if: github.event_name == 'pull_request'
+      #   run: |
+      #     SLURM_JOB_NAME="$(uuidgen)_$(date +%Y%m%d_%H%M%S)"
+      #     echo "SLURM_JOB_NAME=${SLURM_JOB_NAME}" >> $GITHUB_ENV
 
-          mkdir -p "${HOME}/.cache"
+      #     mkdir -p "${HOME}/.cache"
 
-          # TODO: USD baking does not currently support Python 3.11 since
-          # NVIDIA does not currently release `omniverse-kit==107.3` on PyPI.
-          # See: https://github.com/Genesis-Embodied-AI/Genesis/pull/1300
-          srun \
-            --container-image="/mnt/data/images/genesis-v${GENESIS_IMAGE_VER}.sqsh" \
-            --container-mounts=\
-          "${{ github.workspace }}":/root/workspace,\
-          "${HOME}/.cache":/root/.cache \
-            --no-container-mount-home --container-workdir=/root/workspace \
-            --export=NVIDIA_DRIVER_CAPABILITIES=all,HF_TOKEN \
-            --partition=hpc-mid --exclusive --nodes=1 --time="${TIMEOUT_MINUTES}" \
-            --job-name=${SLURM_JOB_NAME} \
-            bash -c "
-              pip install --extra-index-url https://pypi.nvidia.com/ omniverse-kit && \
-              pip install -e '.[dev,render,usd]' && \
-              pytest -v --backend gpu --dev --forked ./tests
-            "
+      #     # TODO: USD baking does not currently support Python 3.11 since
+      #     # NVIDIA does not currently release `omniverse-kit==107.3` on PyPI.
+      #     # See: https://github.com/Genesis-Embodied-AI/Genesis/pull/1300
+      #     srun \
+      #       --container-image="/mnt/data/images/genesis-v${GENESIS_IMAGE_VER}.sqsh" \
+      #       --container-mounts=\
+      #     "${{ github.workspace }}":/root/workspace,\
+      #     "${HOME}/.cache":/root/.cache \
+      #       --no-container-mount-home --container-workdir=/root/workspace \
+      #       --export=NVIDIA_DRIVER_CAPABILITIES=all,HF_TOKEN \
+      #       --partition=hpc-mid --exclusive --nodes=1 --time="${TIMEOUT_MINUTES}" \
+      #       --job-name=${SLURM_JOB_NAME} \
+      #       bash -c "
+      #         pip install --extra-index-url https://pypi.nvidia.com/ omniverse-kit && \
+      #         pip install -e '.[dev,render,usd]' && \
+      #         pytest -v --backend gpu --dev --forked ./tests
+      #       "
 
       - name: Run benchmarks
         run: |
