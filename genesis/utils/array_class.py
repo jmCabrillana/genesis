@@ -52,7 +52,6 @@ class StructRigidGlobalInfo:
     n_equalities_candidate: V_ANNOTATION
     hibernation_thresh_acc: V_ANNOTATION
     hibernation_thresh_vel: V_ANNOTATION
-    max_n_links_per_entity: V_ANNOTATION
 
 
 def get_rigid_global_info(solver):
@@ -81,7 +80,7 @@ def get_rigid_global_info(solver):
     hibernation_thresh_acc.fill(getattr(solver, "_hibernation_thresh_acc", 0.0))
     hibernation_thresh_vel = V(dtype=gs.ti_float, shape=())
     hibernation_thresh_vel.fill(getattr(solver, "_hibernation_thresh_vel", 0.0))
-    
+
     # Basic fields
     kwargs = {
         "n_awake_dofs": V(dtype=gs.ti_int, shape=f_batch()),
@@ -152,7 +151,8 @@ def _init_mass_mat_data(obj, solver):
     obj.mass_mat_L.fill(0)
     obj.mass_mat_D_inv.fill(0)
     obj.meaninertia.fill(0)
-    
+
+
 @dataclasses.dataclass
 class StructRigidGlobalInfoAdjointCache:
     qpos: V_ANNOTATION
@@ -160,11 +160,12 @@ class StructRigidGlobalInfoAdjointCache:
     mass_mat_L: V_ANNOTATION
     mass_mat_D_inv: V_ANNOTATION
     _mass_mat_mask: V_ANNOTATION
-    
+
+
 def get_rigid_global_info_adjoint_cache(solver):
     f_batch = solver._batch_shape
     n_frame = solver._sim.substeps_local + 1
-    
+
     kwargs = {
         "qpos": V(dtype=gs.ti_float, shape=f_batch((n_frame, solver.n_qs_))),
         "mass_mat": V(dtype=gs.ti_float, shape=f_batch((n_frame, solver.n_dofs_, solver.n_dofs_))),
@@ -175,13 +176,15 @@ def get_rigid_global_info_adjoint_cache(solver):
     if use_ndarray:
         return StructRigidGlobalInfoAdjointCache(**kwargs)
     else:
+
         @ti.data_oriented
         class ClassRigidGlobalInfoAdjointCache:
             def __init__(self):
                 for k, v in kwargs.items():
                     setattr(self, k, v)
+
         return ClassRigidGlobalInfoAdjointCache()
-    
+
 
 # =========================================== Constraint ===========================================
 
@@ -1371,6 +1374,7 @@ def get_dofs_state(solver):
 
         return ClassDofsState()
 
+
 def get_dofs_state_adjoint_cache(solver):
     shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_dofs_))
     kwargs = {
@@ -1561,6 +1565,7 @@ def get_links_info(solver):
 
         return ClassLinksInfo()
 
+
 def get_links_state_adjoint_cache(solver):
     shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_links_))
     kwargs = {
@@ -1676,6 +1681,7 @@ def get_joints_state(solver):
                     setattr(self, k, v)
 
         return ClassJointsState()
+
 
 def get_joints_state_adjoint_cache(solver):
     shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_joints_))
@@ -1816,7 +1822,7 @@ def get_geoms_state(solver):
                     setattr(self, k, v)
 
         return ClassGeomsState()
-    
+
 
 def get_geoms_state_adjoint_cache(solver):
     shape = solver._batch_shape((solver._sim.substeps_local + 1, solver.n_geoms_))
@@ -2329,7 +2335,7 @@ class DataManager:
 
         self.entities_info = get_entities_info(solver)
         self.entities_state = get_entities_state(solver)
-        
+
         if solver._static_rigid_sim_config.requires_grad:
             # Data structures required for backward pass
             self.rigid_global_info_adjoint_cache = get_rigid_global_info_adjoint_cache(solver)

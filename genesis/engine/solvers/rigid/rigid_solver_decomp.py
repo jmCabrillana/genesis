@@ -201,7 +201,7 @@ class RigidSolver(Solver):
         self._n_vverts = self.n_vverts
         self._n_entities = self.n_entities
         self._n_equalities = self.n_equalities
-        
+
         self._max_n_links_per_entity = self.max_n_links_per_entity
         self._max_n_joints_per_link = self.max_n_joints_per_link
         self._max_n_dofs_per_joint = self.max_n_dofs_per_joint
@@ -276,15 +276,26 @@ class RigidSolver(Solver):
             hibernation_thresh_vel=getattr(self, "_hibernation_thresh_vel", 0.0),
             requires_grad=getattr(self._sim.options, "requires_grad", False),
         )
-        
-        if self._static_rigid_sim_config.requires_grad:
-            # Add terms for static inner loops
-            self._static_rigid_sim_config.max_n_links_per_entity = getattr(self, "_max_n_links_per_entity", 0)
-            self._static_rigid_sim_config.max_n_joints_per_link = getattr(self, "_max_n_joints_per_link", 0)
-            self._static_rigid_sim_config.max_n_dofs_per_joint = getattr(self, "_max_n_dofs_per_joint", 0)
-            self._static_rigid_sim_config.max_n_qs_per_link = getattr(self, "_max_n_qs_per_link", 0)
-            self._static_rigid_sim_config.max_n_dofs_per_entity = getattr(self, "_max_n_dofs_per_entity", 0)
-            self._static_rigid_sim_config.max_n_dofs_per_link = getattr(self, "_max_n_dofs_per_link", 0)
+
+        # Add terms for static inner loops, use 0 if not requires_grad to avoid re-compilation
+        self._static_rigid_sim_config.max_n_links_per_entity = (
+            getattr(self, "_max_n_links_per_entity", 0) if self._static_rigid_sim_config.requires_grad else 0
+        )
+        self._static_rigid_sim_config.max_n_joints_per_link = (
+            getattr(self, "_max_n_joints_per_link", 0) if self._static_rigid_sim_config.requires_grad else 0
+        )
+        self._static_rigid_sim_config.max_n_dofs_per_joint = (
+            getattr(self, "_max_n_dofs_per_joint", 0) if self._static_rigid_sim_config.requires_grad else 0
+        )
+        self._static_rigid_sim_config.max_n_qs_per_link = (
+            getattr(self, "_max_n_qs_per_link", 0) if self._static_rigid_sim_config.requires_grad else 0
+        )
+        self._static_rigid_sim_config.max_n_dofs_per_entity = (
+            getattr(self, "_max_n_dofs_per_entity", 0) if self._static_rigid_sim_config.requires_grad else 0
+        )
+        self._static_rigid_sim_config.max_n_dofs_per_link = (
+            getattr(self, "_max_n_dofs_per_link", 0) if self._static_rigid_sim_config.requires_grad else 0
+        )
 
         # when the migration is finished, we will remove the about two lines
         self._func_vel_at_point = func_vel_at_point
@@ -2518,7 +2529,7 @@ class RigidSolver(Solver):
         if self.is_built:
             return self._n_links
         return len(self.links)
-    
+
     @property
     def max_n_links_per_entity(self):
         if self.is_built:
@@ -2530,7 +2541,7 @@ class RigidSolver(Solver):
         if self.is_built:
             return self._n_joints
         return len(self.joints)
-    
+
     @property
     def max_n_joints_per_link(self):
         if self.is_built:
@@ -2614,19 +2625,19 @@ class RigidSolver(Solver):
         if self.is_built:
             return self._n_dofs
         return sum(entity.n_dofs for entity in self._entities)
-    
+
     @property
     def max_n_dofs_per_entity(self):
         if self.is_built:
             return self._max_n_dofs_per_entity
         return max([entity.n_dofs for entity in self._entities]) if len(self._entities) > 0 else 0
-    
+
     @property
     def max_n_dofs_per_link(self):
         if self.is_built:
             return self._max_n_dofs_per_link
         return max([link.n_dofs for link in self.links]) if len(self.links) > 0 else 0
-    
+
     @property
     def max_n_dofs_per_joint(self):
         if self.is_built:
@@ -4165,7 +4176,7 @@ def func_update_cartesian_space(
         entities_info=entities_info,
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
-        is_backward=True,
+        is_backward=False,
     )
     func_forward_velocity(
         i_b,
@@ -4558,9 +4569,13 @@ def func_COM_links(
                 links_state.j_quat[i_l, i_b],
             ) = gu.ti_transform_pos_quat_by_trans_quat(links_info.pos[I_l], links_info.quat[I_l], p_pos, p_quat)
 
-            for i_j_ in range(links_info.joint_start[I_l], links_info.joint_end[I_l]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_joints_per_link)):
+            for i_j_ in (
+                range(links_info.joint_start[I_l], links_info.joint_end[I_l])
+                if ti.static(not is_backward)
+                else ti.static(range(static_rigid_sim_config.max_n_joints_per_link))
+            ):
                 i_j = i_j_ if ti.static(not is_backward) else (i_j_ + links_info.joint_start[I_l])
-                
+
                 if i_j < links_info.joint_end[I_l]:
                     I_j = [i_j, i_b] if ti.static(static_rigid_sim_config.batch_joints_info) else i_j
 
@@ -4586,9 +4601,13 @@ def func_COM_links(
         if links_info.n_dofs[I_l] == 0:
             continue
 
-        for i_j_ in range(links_info.joint_start[I_l], links_info.joint_end[I_l]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_joints_per_link)):
+        for i_j_ in (
+            range(links_info.joint_start[I_l], links_info.joint_end[I_l])
+            if ti.static(not is_backward)
+            else ti.static(range(static_rigid_sim_config.max_n_joints_per_link))
+        ):
             i_j = i_j_ if ti.static(not is_backward) else (i_j_ + links_info.joint_start[I_l])
-            
+
             if i_j < links_info.joint_end[I_l]:
                 offset_pos = links_state.root_COM[i_l, i_b] - joints_state.xanchor[i_j, i_b]
                 I_j = [i_j, i_b] if ti.static(static_rigid_sim_config.batch_joints_info) else i_j
@@ -4622,6 +4641,7 @@ def func_COM_links(
                     dofs_state.cdofvel_ang[i_d, i_b] = dofs_state.cdof_ang[i_d, i_b] * dofs_state.vel[i_d, i_b]
                     dofs_state.cdofvel_vel[i_d, i_b] = dofs_state.cdof_vel[i_d, i_b] * dofs_state.vel[i_d, i_b]
 
+
 @ti.func
 def func_forward_kinematics(
     i_b,
@@ -4636,9 +4656,15 @@ def func_forward_kinematics(
     static_rigid_sim_config: ti.template(),
 ):
     n_entities = entities_info.n_links.shape[0]
-    for i_e_ in (range(rigid_global_info.n_awake_entities[i_b]) if ti.static(static_rigid_sim_config.use_hibernation) else range(n_entities)):
-        i_e = rigid_global_info.awake_entities[i_e_, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else i_e_
-        
+    for i_e_ in (
+        range(rigid_global_info.n_awake_entities[i_b])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else range(n_entities)
+    ):
+        i_e = (
+            rigid_global_info.awake_entities[i_e_, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else i_e_
+        )
+
         func_forward_kinematics_entity(
             i_e,
             i_b,
@@ -4653,7 +4679,7 @@ def func_forward_kinematics(
             static_rigid_sim_config,
             False,
         )
-        
+
 
 @ti.func
 def func_forward_velocity(
@@ -4687,6 +4713,7 @@ def func_forward_velocity(
             static_rigid_sim_config=static_rigid_sim_config,
             is_backward=False,
         )
+
 
 @ti.kernel(pure=gs.use_pure)
 def kernel_forward_kinematics_entity(
@@ -4738,9 +4765,13 @@ def func_forward_kinematics_entity(
     is_backward: ti.template(),
 ):
     # Becomes static loop in backward pass, because we assume this loop is an inner loop
-    for i_l_ in range(entities_info.link_start[i_e], entities_info.link_end[i_e]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_links_per_entity)):
+    for i_l_ in (
+        range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+        if ti.static(not is_backward)
+        else ti.static(range(static_rigid_sim_config.max_n_links_per_entity))
+    ):
         i_l = i_l_ if ti.static(not is_backward) else (i_l_ + entities_info.link_start[i_e])
-        
+
         if i_l < entities_info.link_end[i_e]:
             I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
 
@@ -4752,9 +4783,13 @@ def func_forward_kinematics_entity(
                 pos = parent_pos + gu.ti_transform_by_quat(pos, parent_quat)
                 quat = gu.ti_transform_quat_by_quat(quat, parent_quat)
 
-            for i_j_ in range(links_info.joint_start[I_l], links_info.joint_end[I_l]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_joints_per_link)):
+            for i_j_ in (
+                range(links_info.joint_start[I_l], links_info.joint_end[I_l])
+                if ti.static(not is_backward)
+                else ti.static(range(static_rigid_sim_config.max_n_joints_per_link))
+            ):
                 i_j = i_j_ if ti.static(not is_backward) else (i_j_ + links_info.joint_start[I_l])
-                
+
                 if i_j < links_info.joint_end[I_l]:
                     I_j = [i_j, i_b] if ti.static(static_rigid_sim_config.batch_joints_info) else i_j
                     joint_type = joints_info.type[I_j]
@@ -4856,22 +4891,30 @@ def func_forward_velocity_entity(
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
-    for i_l_ in range(entities_info.link_start[i_e], entities_info.link_end[i_e]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_links_per_entity)):
+    for i_l_ in (
+        range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+        if ti.static(not is_backward)
+        else ti.static(range(static_rigid_sim_config.max_n_links_per_entity))
+    ):
         i_l = i_l_ if ti.static(not is_backward) else (i_l_ + entities_info.link_start[i_e])
-        
+
         if i_l < entities_info.link_end[i_e]:
             I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
 
             cvel_vel = ti.Vector.zero(gs.ti_float, 3)
             cvel_ang = ti.Vector.zero(gs.ti_float, 3)
-            
+
             if links_info.parent_idx[I_l] != -1:
                 cvel_vel = links_state.cd_vel[links_info.parent_idx[I_l], i_b]
                 cvel_ang = links_state.cd_ang[links_info.parent_idx[I_l], i_b]
 
-            for i_j_ in range(links_info.joint_start[I_l], links_info.joint_end[I_l]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_joints_per_link)):
+            for i_j_ in (
+                range(links_info.joint_start[I_l], links_info.joint_end[I_l])
+                if ti.static(not is_backward)
+                else ti.static(range(static_rigid_sim_config.max_n_joints_per_link))
+            ):
                 i_j = i_j_ if ti.static(not is_backward) else (i_j_ + links_info.joint_start[I_l])
-                
+
                 if i_j < links_info.joint_end[I_l]:
                     I_j = [i_j, i_b] if ti.static(static_rigid_sim_config.batch_joints_info) else i_j
                     joint_type = joints_info.type[I_j]
@@ -4886,7 +4929,7 @@ def func_forward_velocity_entity(
                         for i_3 in ti.static(range(3)):
                             (
                                 dofs_state.cdofd_ang[dof_start + i_3 + 3, i_b],
-                                dofs_state.cdofd_vel[dof_start + i_3 + 3, i_b]
+                                dofs_state.cdofd_vel[dof_start + i_3 + 3, i_b],
                             ) = gu.motion_cross_motion(
                                 cvel_ang,
                                 cvel_vel,
@@ -4895,11 +4938,19 @@ def func_forward_velocity_entity(
                             )
 
                         for i_3 in ti.static(range(3)):
-                            cvel_vel += dofs_state.cdof_vel[dof_start + i_3 + 3, i_b] * dofs_state.vel[dof_start + i_3 + 3, i_b]
-                            cvel_ang += dofs_state.cdof_ang[dof_start + i_3 + 3, i_b] * dofs_state.vel[dof_start + i_3 + 3, i_b]
+                            cvel_vel += (
+                                dofs_state.cdof_vel[dof_start + i_3 + 3, i_b] * dofs_state.vel[dof_start + i_3 + 3, i_b]
+                            )
+                            cvel_ang += (
+                                dofs_state.cdof_ang[dof_start + i_3 + 3, i_b] * dofs_state.vel[dof_start + i_3 + 3, i_b]
+                            )
 
                     else:
-                        for i_d_ in range(dof_start, joints_info.dof_end[I_j]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_dofs_per_joint)):
+                        for i_d_ in (
+                            range(dof_start, joints_info.dof_end[I_j])
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_joint))
+                        ):
                             i_d = i_d_ if ti.static(not is_backward) else (i_d_ + dof_start)
                             if i_d < joints_info.dof_end[I_j]:
                                 dofs_state.cdofd_ang[i_d, i_b], dofs_state.cdofd_vel[i_d, i_b] = gu.motion_cross_motion(
@@ -4908,8 +4959,12 @@ def func_forward_velocity_entity(
                                     dofs_state.cdof_ang[i_d, i_b],
                                     dofs_state.cdof_vel[i_d, i_b],
                                 )
-                        
-                        for i_d_ in range(dof_start, joints_info.dof_end[I_j]) if ti.static(not is_backward) else ti.static(range(static_rigid_sim_config.max_n_dofs_per_joint)):
+
+                        for i_d_ in (
+                            range(dof_start, joints_info.dof_end[I_j])
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_joint))
+                        ):
                             i_d = i_d_ if ti.static(not is_backward) else (i_d_ + dof_start)
                             if i_d < joints_info.dof_end[I_j]:
                                 cvel_vel += dofs_state.cdof_vel[i_d, i_b] * dofs_state.vel[i_d, i_b]
