@@ -106,8 +106,8 @@ jobs:
       #   run: |
       #     cat "/mnt/data/artifacts/speed_test_${SLURM_JOB_NAME}.txt"
 
-      # - name: Upload benchmark stats as artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: speed-test-results
-      #     path: "/mnt/data/artifacts/speed_test_${{ env.SLURM_JOB_NAME }}.txt"
+      - name: Upload benchmark stats as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: speed-test-results
+          path: "speed_test.txt"
