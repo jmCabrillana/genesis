@@ -332,7 +332,7 @@ jobs:
           script: |
             const sha = context.payload.workflow_run.head_sha;
             const hasBody = Boolean(process.env.COMMENT_BODY && process.env.COMMENT_BODY.trim());
-            const conclusion = hasBody ? 'success';
+            const conclusion = 'success';
             const summary = hasBody
               ? 'Benchmark regression detected. See details in the output.'
               : 'No regression detected.';
