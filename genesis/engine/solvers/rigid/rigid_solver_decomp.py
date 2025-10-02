@@ -4928,6 +4928,11 @@ def func_forward_velocity_entity(
 
                         for i_3 in ti.static(range(3)):
                             (
+                                dofs_state.cdofd_ang[dof_start + i_3, i_b],
+                                dofs_state.cdofd_vel[dof_start + i_3, i_b],
+                            ) = ti.Vector.zero(gs.ti_float, 3), ti.Vector.zero(gs.ti_float, 3)
+
+                            (
                                 dofs_state.cdofd_ang[dof_start + i_3 + 3, i_b],
                                 dofs_state.cdofd_vel[dof_start + i_3 + 3, i_b],
                             ) = gu.motion_cross_motion(
@@ -4970,8 +4975,8 @@ def func_forward_velocity_entity(
                                 cvel_vel += dofs_state.cdof_vel[i_d, i_b] * dofs_state.vel[i_d, i_b]
                                 cvel_ang += dofs_state.cdof_ang[i_d, i_b] * dofs_state.vel[i_d, i_b]
 
-                links_state.cd_vel[i_l, i_b] = cvel_vel
-                links_state.cd_ang[i_l, i_b] = cvel_ang
+            links_state.cd_vel[i_l, i_b] = cvel_vel
+            links_state.cd_ang[i_l, i_b] = cvel_ang
 
 
 @ti.kernel(pure=gs.use_pure)
