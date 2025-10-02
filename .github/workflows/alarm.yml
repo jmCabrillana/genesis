@@ -65,7 +65,8 @@ jobs:
 
             core.setOutput('pr_number', pr ? String(pr.number) : '');
 
-      - name: Check regressions
+      - name: Check regressions + build outputs
+        id: analyze
         if: ${{ steps.pr.outputs.pr_number != '' }}
         env:
           # --- W&B ---
@@ -83,14 +84,15 @@ jobs:
           # Input/Output paths
           ARTIFACTS_DIR: ${{ steps.dl.outputs.download-path }}
           PR_COMMENT_PATH: pr_comment.md
+          CHECK_BODY_PATH: check_output.md
         run: |
           python - <<'PY'
           import os, sys, json, math, re
           import statistics as stats
           import wandb
 
+          # ---------- helpers ----------
           SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}")
-
           def _norm_rev(text):
               if not text: return None
               text = text.split("@", 1)[0]
@@ -135,15 +137,32 @@ jobs:
                   out[tid] = {"runtime_fps": rt, "compile_time": ct}
               return out
 
-          # ----- read workflow_run id (for tag only; no API calls) -----
-          ev = json.load(open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8"))
-          wr  = ev["workflow_run"]
-          wr_id = wr["id"]
+          def fmt_num(v):
+              if v is None or (isinstance(v,float) and math.isnan(v)): return "—"
+              try:
+                  if abs(v) >= 1000: return f"{v:,.0f}"
+                  return f"{v:.2f}" if isinstance(v,float) and not v.is_integer() else f"{int(v)}"
+              except Exception:
+                  return str(v)
 
-          # ----- Load current PR artifacts -----
+          def fmt_pct(v, highlight=False):
+              if v is None: return "—"
+              s = f"{v:+.2f}%"
+              return f"**{s}**" if highlight else s
+
+          # ----- read run params -----
+          tol_rt = float(os.environ.get("RUNTIME_REGRESSION_TOLERANCE_PCT","10"))
+          tol_ct = float(os.environ.get("COMPILE_REGRESSION_TOLERANCE_PCT","10"))
+          MAX_REVISIONS = int(os.environ.get("MAX_REVISIONS","5"))
+          NO_CHANGE_PATIENCE = int(os.environ.get("NO_CHANGE_PATIENCE","100"))
+
+          # ----- load artifact (current results) -----
           artifacts_path = os.path.abspath(os.environ.get("ARTIFACTS_DIR", "./artifacts"))
           if not os.path.exists(artifacts_path):
-              print("No artifacts dir; skip."); open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close(); sys.exit(0)
+              # no data → no comment/check body
+              open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close()
+              open(os.environ.get("CHECK_BODY_PATH","check_output.md"),"w").close()
+              sys.exit(0)
 
           current_txt_path = None
           for root, _, files in os.walk(artifacts_path):
@@ -151,34 +170,25 @@ jobs:
                   if fname.startswith("speed_test") and fname.endswith(".txt"):
                       current_txt_path = os.path.join(root, fname); break
               if current_txt_path: break
-
           if current_txt_path is None:
-              print("No speed_test*.txt; skip."); open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close(); sys.exit(0)
+              open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close()
+              open(os.environ.get("CHECK_BODY_PATH","check_output.md"),"w").close()
+              sys.exit(0)
 
           with open(current_txt_path, "r", encoding="utf-8") as f:
-              current_benchmark = artifacts_parse_speed_txt_lines(f.readlines())
+              current_bm = artifacts_parse_speed_txt_lines(f.readlines())
 
-          # ----- W&B login (anonymous allowed) -----
+          # ----- W&B baselines -----
           if not os.getenv("WANDB_API_KEY"):
               try: wandb.login(anonymous="allow", relogin=True)
               except Exception: pass
-
-          # ----- Collect baselines from W&B -----
           ENTITY = os.environ.get("WANDB_ENTITY","")
           PROJECT= os.environ.get("WANDB_PROJECT","")
-          MAX_REVISIONS = int(os.environ.get("MAX_REVISIONS","5"))
-          NO_CHANGE_PATIENCE = int(os.environ.get("NO_CHANGE_PATIENCE","100"))
-          tol_rt = float(os.environ.get("RUNTIME_REGRESSION_TOLERANCE_PCT","10"))
-          tol_ct = float(os.environ.get("COMPILE_REGRESSION_TOLERANCE_PCT","10"))
 
           api = wandb.Api()
           runs_iter = api.runs(f"{ENTITY}/{PROJECT}", order="-created_at")
 
-          by_rev = {}      # rev -> {bench_id: {runtime_fps, compile_time}}
-          rev_order = []   # latest -> oldest
-          selected_revs = None
-          no_change_streak = 0
-
+          by_rev = {}; rev_order = []; selected_revs=None; no_change=0
           for run in runs_iter:
               if run.state != "finished": continue
               cfg = getattr(run, "config", None)
@@ -187,32 +197,26 @@ jobs:
               raw_rev = cfg.get("revision"); raw_bid = cfg.get("benchmark_id")
               if not raw_rev or not raw_bid:
                   if selected_revs is not None:
-                      no_change_streak += 1
-                      if no_change_streak >= NO_CHANGE_PATIENCE: break
+                      no_change += 1
+                      if no_change >= NO_CHANGE_PATIENCE: break
                   continue
-
-              rev = _norm_rev(raw_rev.get("value"))
-              bid = raw_bid.get("value")
+              rev = _norm_rev(raw_rev.get("value")); bid = raw_bid.get("value")
               if not rev or not bid:
                   if selected_revs is not None:
-                      no_change_streak += 1
-                      if no_change_streak >= NO_CHANGE_PATIENCE: break
+                      no_change += 1
+                      if no_change >= NO_CHANGE_PATIENCE: break
                   continue
-
               if selected_revs is not None and rev not in selected_revs:
-                  no_change_streak += 1
-                  if no_change_streak >= NO_CHANGE_PATIENCE: break
+                  no_change += 1
+                  if no_change >= NO_CHANGE_PATIENCE: break
                   continue
-
               if rev not in by_rev:
-                  by_rev[rev] = {}
-                  rev_order.append(rev)
-                  if len(rev_order) >= MAX_REVISIONS:
-                      selected_revs = set(rev_order)
+                  by_rev[rev]={}; rev_order.append(rev)
+                  if len(rev_order) >= MAX_REVISIONS: selected_revs = set(rev_order)
 
               nbid = wandb_normalize_benchmark_id(bid)
               if nbid not in by_rev[rev]:
-                  runtime_fps = None; compile_time = None; cnt = 0
+                  runtime_fps=None; compile_time=None; cnt=0
                   for row in run.scan_history(keys=["runtime_fps","compile_time"]):
                       runtime_fps = row.get("runtime_fps")
                       compile_time = row.get("compile_time")
@@ -220,79 +224,93 @@ jobs:
                       cnt += 1
                       if cnt >= 10: break
                   by_rev[rev][nbid] = {"runtime_fps": runtime_fps, "compile_time": compile_time}
-                  if selected_revs is not None: no_change_streak = 0
+                  if selected_revs is not None: no_change = 0
               else:
                   if selected_revs is not None:
-                      no_change_streak += 1
-                      if no_change_streak >= NO_CHANGE_PATIENCE: break
+                      no_change += 1
+                      if no_change >= NO_CHANGE_PATIENCE: break
 
-          # ----- Compare current vs baselines -----
-          def collect_mean(metric_key, bench_id):
-              vals = []
+          def mean_of(metric, bid):
+              vals=[]
               for r in by_rev.keys():
-                  v = by_rev.get(r, {}).get(bench_id, {}).get(metric_key)
-                  if isinstance(v, (int,float)) and not (isinstance(v,float) and math.isnan(v)):
+                  v = by_rev.get(r,{}).get(bid,{}).get(metric)
+                  if isinstance(v,(int,float)) and not (isinstance(v,float) and math.isnan(v)):
                       vals.append(float(v))
               return stats.mean(vals) if vals else None
 
-          runtime_regs = []; compile_regs = []
-          for bid, m in current_benchmark.items():
-              cur_rt = m.get("runtime_fps"); cur_ct = m.get("compile_time")
-              base_rt = collect_mean("runtime_fps", bid)
-              base_ct = collect_mean("compile_time", bid)
-              if base_rt is not None and isinstance(cur_rt,(int,float)) and not (isinstance(cur_rt,float) and math.isnan(cur_rt)) and base_rt>0:
-                  d = (cur_rt - base_rt) / base_rt * 100.0
-                  if True: # d < -tol_rt:
-                    runtime_regs.append((bid, cur_rt, base_rt, d))
-              if base_ct is not None and isinstance(cur_ct,(int,float)) and not (isinstance(cur_ct,float) and math.isnan(cur_ct)) and base_ct>0:
-                  d = (cur_ct - base_ct) / base_ct * 100.0
-                  if True: #d > tol_ct:
-                    compile_regs.append((bid, cur_ct, base_ct, d))
+          # ----- build table rows for ALL benchmarks -----
+          rows = []
+          reg_found = False
+          for bid in sorted(current_bm.keys()):
+              cur_rt = current_bm[bid].get("runtime_fps")
+              cur_ct = current_bm[bid].get("compile_time")
+              base_rt = mean_of("runtime_fps", bid)
+              base_ct = mean_of("compile_time", bid)
 
-          # if not runtime_regs and not compile_regs:
-          #   print("No regression vs baselines; skip comment.")
-          #   open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close()
-          #   sys.exit(0)
+              d_rt = ((cur_rt - base_rt)/base_rt*100.0) if (base_rt and isinstance(cur_rt,(int,float))) else None
+              d_ct = ((cur_ct - base_ct)/base_ct*100.0) if (base_ct and isinstance(cur_ct,(int,float))) else None
 
-          def trunc(s, n=120): return s if len(s)<=n else s[:n]+"…"
+              is_reg = (d_rt is not None and d_rt < -tol_rt) or (d_ct is not None and d_ct > tol_ct)
+              reg_found = reg_found or is_reg
 
-          lines = []
-          lines.append(":warning: **Benchmark regression detected**")
-          lines.append(f"- Baseline commits considered: **{len(rev_order)}**")
-          for i, r in enumerate(rev_order, 1):
-              lines.append(f"  - Commit {i}: {r}")
-          lines.append(f"- Runtime tolerance: **-{tol_rt:.1f}%**; Compile tolerance: **+{tol_ct:.1f}%**")
-          lines.append("")
+              stat = "🔴" if is_reg else "✅"
+              delta_rt_cell = fmt_pct(d_rt, highlight=is_reg and d_rt is not None and d_rt < -tol_rt)
+              delta_ct_cell = fmt_pct(d_ct, highlight=is_reg and d_ct is not None and d_ct > tol_ct)
 
-          if runtime_regs:
-              runtime_regs.sort(key=lambda x: x[3])
-              lines += ["**Runtime FPS regressions (vs mean of other commits)**",
-                        "| benchmark_id | current | baseline mean | delta % |",
-                        "|---|---:|---:|---:|"]
-              for bid, cur, base, d in runtime_regs[:20]:
-                  lines.append(f"| `{trunc(bid)}` | {cur:,.0f} | {base:,.0f} | {d:.2f}% |")
-              if len(runtime_regs)>20: lines.append("_Only first 20 shown._")
-              lines.append("")
+              rows.append([
+                  stat,
+                  f"`{bid}`",
+                  fmt_num(cur_rt), fmt_num(base_rt), delta_rt_cell,
+                  fmt_num(cur_ct), fmt_num(base_ct), delta_ct_cell
+              ])
 
-          if compile_regs:
-              compile_regs.sort(key=lambda x: -x[3])
-              lines += ["**Compile-time regressions (vs mean of other commits)**",
-                        "| benchmark_id | current | baseline mean | delta % |",
-                        "|---|---:|---:|---:|"]
-              for bid, cur, base, d in compile_regs[:20]:
-                  lines.append(f"| `{trunc(bid)}` | {cur:,.0f} | {base:,.0f} | {d:.2f}% |")
-              if len(compile_regs)>20: lines.append("_Only first 20 shown._")
-              lines.append("")
+          # ----- compose CHECK body -----
+          header = [
+            "| status | benchmark_id | current FPS | baseline FPS | Δ FPS | current compile | baseline compile | Δ compile |",
+            "|:------:|:-------------|-----------:|-------------:|------:|----------------:|-----------------:|---------:|",
+          ]
+          table_lines = header + ["| "+" | ".join(r)+" |" for r in rows]
 
-          lines.append(f"<!-- bench-guard-run:{wr_id} -->")
-          body = "\n".join(lines)
+          summary_top = []
+          summary_top.append(f"Baselines considered: **{len(rev_order)}** commits")
+          if reg_found:
+              summary_top.append(f"Regressions detected (runtime ≤ −{tol_rt:.0f}%, compile ≥ +{tol_ct:.0f}%).")
+          else:
+              summary_top.append("No regressions detected.")
 
+          check_body = "\n".join(summary_top + ["", "<details><summary>Benchmark details</summary>", "", *table_lines, "", "</details>"])
+
+          # ----- compose COMMENT body -----
+          if reg_found:
+              comment_body = "\n".join([
+                  ":warning: **Benchmark comparison vs W&B baselines**",
+                  f"- Baselines considered: **{len(rev_order)}** commits",
+                  f"- Thresholds: runtime ≤ −{tol_rt:.0f}%, compile ≥ +{tol_ct:.0f}%",
+                  "",
+                  *table_lines
+              ])
+          else:
+              comment_body = ""
+
+          # write files
+          with open(os.environ.get("CHECK_BODY_PATH","check_output.md"), "w", encoding="utf-8") as f:
+              f.write(check_body+"\n")
           with open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"), "w", encoding="utf-8") as f:
-              f.write(body + "\n")
-          print("[INFO] wrote pr_comment.md")
+              f.write(comment_body+"\n")
+
+          # flag for next steps
+          open("HAS_REGRESSIONS.txt","w").write("true\n" if reg_found else "false\n")
           PY
 
-          # capture comment into env for next step
+          # expose outputs to later steps
+          echo "HAS_REGRESSIONS=$(cat HAS_REGRESSIONS.txt)" >> "$GITHUB_ENV"
+          {
+            echo 'CHECK_OUTPUT<<__EOF__'
+            cat check_output.md
+            echo '__EOF__'
+          } >> "$GITHUB_ENV"
+
+          # only set SCRIPT_OUTPUT when we actually want to comment
           if [ -s "pr_comment.md" ]; then
             {
               echo 'SCRIPT_OUTPUT<<__EOF__'
@@ -303,7 +321,7 @@ jobs:
             echo "SCRIPT_OUTPUT=" >> "$GITHUB_ENV"
           fi
 
-      - name: Add PR comment
+      - name: Add PR comment (only if regressions)
         if: ${{ steps.pr.outputs.pr_number != '' && env.SCRIPT_OUTPUT != '' }}
         uses: actions/github-script@v7
         env:
@@ -311,10 +329,6 @@ jobs:
         with:
           script: |
             const prNumber = Number('${{ steps.pr.outputs.pr_number }}');
-            if (!prNumber) {
-              core.info('No PR number; skipping comment.');
-              return;
-            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -322,22 +336,21 @@ jobs:
               body: process.env.COMMENT_BODY
             });
 
-      - name: Publish PR check (show in Checks tab)
-        if: always()   # 실패해도 체크는 찍히도록
+      - name: Publish PR check (always show full table)
+        if: always()
         uses: actions/github-script@v7
         env:
           CHECK_NAME: Benchmark Comparison
-          COMMENT_BODY: ${{ env.SCRIPT_OUTPUT }}   # 위에서 pr_comment.md를 env로 넣은 값
+          CHECK_BODY: ${{ env.CHECK_OUTPUT }}
+          HAS_REGRESSIONS: ${{ env.HAS_REGRESSIONS }}
         with:
           script: |
             const sha = context.payload.workflow_run.head_sha;
-            const hasBody = Boolean(process.env.COMMENT_BODY && process.env.COMMENT_BODY.trim());
+            const hasRegs = (process.env.HAS_REGRESSIONS || 'false').trim() === 'true';
             const conclusion = 'success';
-            const summary = hasBody
-              ? 'Benchmark regression detected. See details in the output.'
-              : 'No regression detected.';
-
-            // Checks API: PR 하단 "Checks" 섹션에 나타납니다.
+            const summary = hasRegs
+              ? 'Regressions detected. See the table below.'
+              : 'No regressions detected. See the table below.';
             await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -348,7 +361,6 @@ jobs:
               output: {
                 title: process.env.CHECK_NAME,
                 summary,
-                // 길어도 괜찮다면 전체 코멘트 본문을 체크 출력으로 넣을 수 있어요
-                text: process.env.COMMENT_BODY || undefined
+                text: process.env.CHECK_BODY || undefined
               }
             });
