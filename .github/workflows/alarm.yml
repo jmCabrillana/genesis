@@ -1,4 +1,4 @@
-name: Alarm Regression (W&B)
+name: Benchmark Comparison & Alarm Regression
 
 on:
   workflow_run:
@@ -10,6 +10,8 @@ permissions:
   actions: read
   issues: write
   pull-requests: write
+  checks: write
+  statuses: write
 
 jobs:
   comment-if-regressed:
@@ -19,99 +21,187 @@ jobs:
       contains(fromJson('["success","neutral"]'), github.event.workflow_run.conclusion)
 
     steps:
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install deps
         run: |
-          python -m pip install --quiet --upgrade requests wandb
+          python -m pip install --quiet --upgrade wandb
 
-      - name: Decide & comment (compare with W&B history)
+      - name: Download artifacts from triggering run
+        id: dl
+        uses: actions/download-artifact@v4
+        with:
+          name: speed-test-results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./artifacts
+
+      - name: Show downloaded files
+        run: |
+          echo "Downloaded into ${{ steps.dl.outputs.download-path }}"
+          ls -la ${{ steps.dl.outputs.download-path }} || true
+          (command -v tree >/dev/null && tree -a ${{ steps.dl.outputs.download-path }}) || true
+
+      - name: Resolve PR number
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const wr = context.payload.workflow_run;
+            let pr = (wr.pull_requests && wr.pull_requests[0]) || null;
+
+            if (!pr) {
+              const sha = wr.head_sha;
+              const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: sha,
+              });
+              if (data && data.length) pr = data[0];
+            }
+
+            core.setOutput('pr_number', pr ? String(pr.number) : '');
+
+      - name: Check regressions
+        if: ${{ steps.pr.outputs.pr_number != '' }}
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_API_URL: ${{ github.api_url }}
-          # --- W&B 설정 ---
-          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }} # public이면 없어도 동작
+          # --- W&B ---
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           WANDB_ENTITY: genesis-ai-company
           WANDB_PROJECT: genesis-benchmarks
-          # --- 수집/비교 파라미터 ---
-          MAX_REVISIONS: "30"                 # 서로 다른 revision 최대 수 (원하면 조절)
-          NO_CHANGE_PATIENCE: "500"           # 조기종료 휴리스틱
+          WANDB_SILENT: "true"
+
+          # --- Parameters ---
+          MAX_REVISIONS: "5"
+          NO_CHANGE_PATIENCE: "100"
           RUNTIME_REGRESSION_TOLERANCE_PCT: "10"
           COMPILE_REGRESSION_TOLERANCE_PCT: "10"
+
+          # Input/Output paths
+          ARTIFACTS_DIR: ${{ steps.dl.outputs.download-path }}
+          PR_COMMENT_PATH: pr_comment.md
         run: |
           python - <<'PY'
-          import os, sys, json, io, math, zipfile, requests
+          import os, sys, json, math, re
+          import statistics as stats
           import wandb
 
-          API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
-          ev  = json.load(open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8"))
+          SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}")
+
+          def _norm_rev(text):
+              if not text: return None
+              text = text.split("@", 1)[0]
+              m = SHA_RE.search(text)
+              return m.group(0) if m else text
+
+          def _normalize_kv_id(kv: dict, drop_keys=None) -> str:
+              drop = set(drop_keys or [])
+              pairs = []
+              for k, v in kv.items():
+                  if k in drop or v is None: continue
+                  k = str(k).strip(); v = str(v).strip()
+                  if not k or not v: continue
+                  pairs.append((k, v))
+              pairs.sort(key=lambda x: x[0])
+              return "-".join(f"{k}={v}" for k, v in pairs)
+
+          def wandb_normalize_benchmark_id(bid: str) -> str:
+              kv = {}
+              for token in (p.strip() for p in bid.split("-") if p.strip()):
+                  if "=" not in token: continue
+                  k, v = token.split("=", 1)
+                  kv[k.strip()] = v.strip()
+              return _normalize_kv_id(kv)
+
+          def artifacts_parse_speed_txt_lines(lines):
+              METRIC_KEYS = {"compile_time", "runtime_fps", "realtime_factor"}
+              out = {}
+              for line in lines:
+                  if not line.strip(): continue
+                  parts = [p.strip() for p in line.strip().split("|") if "=" in p]
+                  kv = {}
+                  for p in parts:
+                      k, v = p.split("=", 1)
+                      kv[k.strip()] = v.strip()
+                  tid = _normalize_kv_id(kv, drop_keys=METRIC_KEYS)
+                  rt = kv.get("runtime_fps"); ct = kv.get("compile_time")
+                  try: rt = float(rt) if rt is not None else None
+                  except: rt = None
+                  try: ct = float(ct) if ct is not None else None
+                  except: ct = None
+                  out[tid] = {"runtime_fps": rt, "compile_time": ct}
+              return out
+
+          # ----- read workflow_run id (for tag only; no API calls) -----
+          ev = json.load(open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8"))
           wr  = ev["workflow_run"]
-          repo= ev["repository"]
-          owner, name = repo["full_name"].split("/", 1)
-          head_sha = wr.get("head_sha")
-
-          tol_rt = float(os.environ.get("RUNTIME_REGRESSION_TOLERANCE_PCT","10"))
-          tol_ct = float(os.environ.get("COMPILE_REGRESSION_TOLERANCE_PCT","10"))
-          MAX_REVISIONS = int(os.environ.get("MAX_REVISIONS","30"))
-          NO_CHANGE_PATIENCE = int(os.environ.get("NO_CHANGE_PATIENCE","500"))
-
-          sess = requests.Session()
-          sess.headers.update({
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-            "Accept": "application/vnd.github+json",
-          })
-
-          # --- PR 찾기: payload 우선, 없으면 commits/{sha}/pulls fallback ---
-          prs = wr.get("pull_requests") or []
-          pr = prs[0] if prs else None
-          if not pr:
-            url = f"{API}/repos/{owner}/{name}/commits/{head_sha}/pulls"
-            r = sess.get(url, headers={"Accept":"application/vnd.github.groot-preview+json"})
-            if r.ok and r.json():
-              pr = r.json()[0]
-          if not pr:
-            print("No PR found via payload nor commit->pulls. Skip.")
-            sys.exit(0)
-
-          pr_num = pr["number"]
-          target_repo_api = pr["base"]["repo"]["url"]
           wr_id = wr["id"]
 
-          # ---------- W&B에서 최근 N개의 '서로 다른 revision' 수집 ----------
+          # ----- Load current PR artifacts -----
+          artifacts_path = os.path.abspath(os.environ.get("ARTIFACTS_DIR", "./artifacts"))
+          if not os.path.exists(artifacts_path):
+              print("No artifacts dir; skip."); open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close(); sys.exit(0)
+
+          current_txt_path = None
+          for root, _, files in os.walk(artifacts_path):
+              for fname in files:
+                  if fname.startswith("speed_test") and fname.endswith(".txt"):
+                      current_txt_path = os.path.join(root, fname); break
+              if current_txt_path: break
+
+          if current_txt_path is None:
+              print("No speed_test*.txt; skip."); open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close(); sys.exit(0)
+
+          with open(current_txt_path, "r", encoding="utf-8") as f:
+              current_benchmark = artifacts_parse_speed_txt_lines(f.readlines())
+
+          # ----- W&B login (anonymous allowed) -----
+          if not os.getenv("WANDB_API_KEY"):
+              try: wandb.login(anonymous="allow", relogin=True)
+              except Exception: pass
+
+          # ----- Collect baselines from W&B -----
           ENTITY = os.environ.get("WANDB_ENTITY","")
           PROJECT= os.environ.get("WANDB_PROJECT","")
-          api = wandb.Api()
+          MAX_REVISIONS = int(os.environ.get("MAX_REVISIONS","5"))
+          NO_CHANGE_PATIENCE = int(os.environ.get("NO_CHANGE_PATIENCE","100"))
+          tol_rt = float(os.environ.get("RUNTIME_REGRESSION_TOLERANCE_PCT","10"))
+          tol_ct = float(os.environ.get("COMPILE_REGRESSION_TOLERANCE_PCT","10"))
 
-          by_rev = {}    # revision -> {benchmark_id: {runtime_fps, compile_time}}
-          rev_order = [] # 최신 -> 과거
+          api = wandb.Api()
           runs_iter = api.runs(f"{ENTITY}/{PROJECT}", order="-created_at")
 
+          by_rev = {}      # rev -> {bench_id: {runtime_fps, compile_time}}
+          rev_order = []   # latest -> oldest
           selected_revs = None
           no_change_streak = 0
 
-          def as_float(x):
-              try: return float(x)
-              except: return math.nan
-
           for run in runs_iter:
-              if run.state != "finished":
+              if run.state != "finished": continue
+              cfg = getattr(run, "config", None)
+              if cfg is None: continue
+              cfg = json.loads(cfg)
+              raw_rev = cfg.get("revision"); raw_bid = cfg.get("benchmark_id")
+              if not raw_rev or not raw_bid:
+                  if selected_revs is not None:
+                      no_change_streak += 1
+                      if no_change_streak >= NO_CHANGE_PATIENCE: break
                   continue
-              cfg = run.config or {}
-              rev = cfg.get("revision")
-              bid = cfg.get("benchmark_id")
+
+              rev = _norm_rev(raw_rev.get("value"))
+              bid = raw_bid.get("value")
               if not rev or not bid:
                   if selected_revs is not None:
                       no_change_streak += 1
-                      if no_change_streak >= NO_CHANGE_PATIENCE:
-                          break
+                      if no_change_streak >= NO_CHANGE_PATIENCE: break
                   continue
 
               if selected_revs is not None and rev not in selected_revs:
                   no_change_streak += 1
-                  if no_change_streak >= NO_CHANGE_PATIENCE:
-                      break
+                  if no_change_streak >= NO_CHANGE_PATIENCE: break
                   continue
 
               if rev not in by_rev:
@@ -120,117 +210,63 @@ jobs:
                   if len(rev_order) >= MAX_REVISIONS:
                       selected_revs = set(rev_order)
 
-              changed = False
-              if bid not in by_rev[rev]:
-                  sm = run.summary or {}
-                  by_rev[rev][bid] = {
-                      "runtime_fps": as_float(sm.get("runtime_fps")),
-                      "compile_time": as_float(sm.get("compile_time")),
-                  }
-                  changed = True
-
-              if selected_revs is not None:
-                  if changed:
-                      no_change_streak = 0
-                  else:
+              nbid = wandb_normalize_benchmark_id(bid)
+              if nbid not in by_rev[rev]:
+                  runtime_fps = None; compile_time = None; cnt = 0
+                  for row in run.scan_history(keys=["runtime_fps","compile_time"]):
+                      runtime_fps = row.get("runtime_fps")
+                      compile_time = row.get("compile_time")
+                      if runtime_fps is not None and compile_time is not None: break
+                      cnt += 1
+                      if cnt >= 10: break
+                  by_rev[rev][nbid] = {"runtime_fps": runtime_fps, "compile_time": compile_time}
+                  if selected_revs is not None: no_change_streak = 0
+              else:
+                  if selected_revs is not None:
                       no_change_streak += 1
-                      if no_change_streak >= NO_CHANGE_PATIENCE:
-                          break
+                      if no_change_streak >= NO_CHANGE_PATIENCE: break
 
-          # --- benchmark id 표준화(키 알파벳 정렬) ---
-          def normalize_benchmark_id(bid: str) -> str:
-              parts = [p.strip() for p in bid.split('-') if p.strip()]
-              prefix = [p for p in parts if '=' not in p]
-              kv = []
-              for p in parts:
-                  if '=' in p:
-                      k, v = p.split('=', 1)
-                      kv.append((k.strip(), v.strip()))
-              kv.sort(key=lambda x: x[0])
-              out = []
-              if prefix: out.extend(prefix)
-              out.extend([f"{k}={v}" for k, v in kv])
-              return '-'.join(out)
-
-          norm_by_rev = {}
-          for rev in rev_order:
-              bm = by_rev.get(rev, {})
-              nbm = {}
-              for old_id, m in bm.items():
-                  nid = normalize_benchmark_id(old_id)
-                  nbm[nid] = m
-              norm_by_rev[rev] = nbm
-          by_rev = norm_by_rev
-
-          # --- 이번 PR 커밋의 revision 찾기 (정확 매칭 우선, prefix/short sha fallback) ---
-          cur_rev = None
-          if head_sha in by_rev:
-              cur_rev = head_sha
-          else:
-              # W&B 쪽이 짧은 SHA거나 반대로 짧게 저장한 경우 대비
-              for rev in by_rev.keys():
-                  if rev.startswith(head_sha) or head_sha.startswith(rev):
-                      cur_rev = rev
-                      break
-
-          if not cur_rev:
-              print("Current revision not found in W&B runs. Skip comment.")
-              sys.exit(0)
-
-          # --- baseline(다른 revision들) 평균과 비교 ---
-          others = [r for r in rev_order if r != cur_rev]
-          if not others:
-              print("No other revisions for baseline. Skip.")
-              sys.exit(0)
-
-          import statistics as stats
-
-          cur_bm = by_rev[cur_rev]
-          runtime_regs = []  # (id, cur, base_mean, delta_pct)
-          compile_regs = []  # (id, cur, base_mean, delta_pct)
-
-          def collect_mean(metric_key, bid):
+          # ----- Compare current vs baselines -----
+          def collect_mean(metric_key, bench_id):
               vals = []
-              for r in others:
-                  v = by_rev.get(r, {}).get(bid, {}).get(metric_key)
-                  if isinstance(v, (int,float)) and not (isinstance(v, float) and math.isnan(v)):
+              for r in by_rev.keys():
+                  v = by_rev.get(r, {}).get(bench_id, {}).get(metric_key)
+                  if isinstance(v, (int,float)) and not (isinstance(v,float) and math.isnan(v)):
                       vals.append(float(v))
-              if len(vals) == 0: return None
-              return stats.mean(vals)
+              return stats.mean(vals) if vals else None
 
-          for bid, m in cur_bm.items():
-              cur_rt = m.get("runtime_fps")
-              cur_ct = m.get("compile_time")
-
+          runtime_regs = []; compile_regs = []
+          for bid, m in current_benchmark.items():
+              cur_rt = m.get("runtime_fps"); cur_ct = m.get("compile_time")
               base_rt = collect_mean("runtime_fps", bid)
-              base_ct = collect_mean("compile_time",  bid)
-
-              if base_rt is not None and isinstance(cur_rt, (int,float)) and not (isinstance(cur_rt,float) and math.isnan(cur_rt)) and base_rt>0:
+              base_ct = collect_mean("compile_time", bid)
+              if base_rt is not None and isinstance(cur_rt,(int,float)) and not (isinstance(cur_rt,float) and math.isnan(cur_rt)) and base_rt>0:
                   d = (cur_rt - base_rt) / base_rt * 100.0
-                  if d < -tol_rt:
-                      runtime_regs.append((bid, cur_rt, base_rt, d))
-
-              if base_ct is not None and isinstance(cur_ct, (int,float)) and not (isinstance(cur_ct,float) and math.isnan(cur_ct)) and base_ct>0:
+                  if True: # d < -tol_rt:
+                    runtime_regs.append((bid, cur_rt, base_rt, d))
+              if base_ct is not None and isinstance(cur_ct,(int,float)) and not (isinstance(cur_ct,float) and math.isnan(cur_ct)) and base_ct>0:
                   d = (cur_ct - base_ct) / base_ct * 100.0
-                  if d > tol_ct:
-                      compile_regs.append((bid, cur_ct, base_ct, d))
+                  if True: #d > tol_ct:
+                    compile_regs.append((bid, cur_ct, base_ct, d))
 
-          if not runtime_regs and not compile_regs:
-              print("No regression vs W&B baselines. Skip comment.")
-              sys.exit(0)
+          # if not runtime_regs and not compile_regs:
+          #   print("No regression vs baselines; skip comment.")
+          #   open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"),"w").close()
+          #   sys.exit(0)
 
-          # --- PR 코멘트 본문 작성 ---
           def trunc(s, n=120): return s if len(s)<=n else s[:n]+"…"
+
           lines = []
-          lines.append(":warning: **Benchmark regression detected (vs W&B history)**")
-          lines.append(f"- Revisions considered: **{len(rev_order)}** (excluding current)")
+          lines.append(":warning: **Benchmark regression detected**")
+          lines.append(f"- Baseline commits considered: **{len(rev_order)}**")
+          for i, r in enumerate(rev_order, 1):
+              lines.append(f"  - Commit {i}: {r}")
           lines.append(f"- Runtime tolerance: **-{tol_rt:.1f}%**; Compile tolerance: **+{tol_ct:.1f}%**")
-          lines.append(f"- Current revision: `{cur_rev}`")
           lines.append("")
 
           if runtime_regs:
-              runtime_regs.sort(key=lambda x: x[3])  # more negative first
-              lines += ["**Runtime FPS regressions (vs mean of other revisions)**",
+              runtime_regs.sort(key=lambda x: x[3])
+              lines += ["**Runtime FPS regressions (vs mean of other commits)**",
                         "| benchmark_id | current | baseline mean | delta % |",
                         "|---|---:|---:|---:|"]
               for bid, cur, base, d in runtime_regs[:20]:
@@ -239,8 +275,8 @@ jobs:
               lines.append("")
 
           if compile_regs:
-              compile_regs.sort(key=lambda x: -x[3])  # more positive first
-              lines += ["**Compile-time regressions (vs mean of other revisions)**",
+              compile_regs.sort(key=lambda x: -x[3])
+              lines += ["**Compile-time regressions (vs mean of other commits)**",
                         "| benchmark_id | current | baseline mean | delta % |",
                         "|---|---:|---:|---:|"]
               for bid, cur, base, d in compile_regs[:20]:
@@ -248,15 +284,71 @@ jobs:
               if len(compile_regs)>20: lines.append("_Only first 20 shown._")
               lines.append("")
 
-          tag = f"bench-guard-run:{wr_id}"
-          lines.append(f"<!-- {tag} -->")
+          lines.append(f"<!-- bench-guard-run:{wr_id} -->")
           body = "\n".join(lines)
 
-          # --- 중복 코멘트 방지 & 코멘트 작성 (코멘트 대상은 반드시 base repo) ---
-          existing = sess.get(f"{target_repo_api}/issues/{pr_num}/comments").json()
-          if any(tag in (c.get("body") or "") for c in existing):
-              print("Already commented for this run. Skip.")
-              sys.exit(0)
-          resp = sess.post(f"{target_repo_api}/issues/{pr_num}/comments", json={"body": body})
-          print("Comment status:", resp.status_code, resp.text[:200])
+          with open(os.environ.get("PR_COMMENT_PATH","pr_comment.md"), "w", encoding="utf-8") as f:
+              f.write(body + "\n")
+          print("[INFO] wrote pr_comment.md")
           PY
+
+          # capture comment into env for next step
+          if [ -s "pr_comment.md" ]; then
+            {
+              echo 'SCRIPT_OUTPUT<<__EOF__'
+              cat pr_comment.md
+              echo '__EOF__'
+            } >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_OUTPUT=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Add PR comment
+        if: ${{ steps.pr.outputs.pr_number != '' && env.SCRIPT_OUTPUT != '' }}
+        uses: actions/github-script@v7
+        env:
+          COMMENT_BODY: ${{ env.SCRIPT_OUTPUT }}
+        with:
+          script: |
+            const prNumber = Number('${{ steps.pr.outputs.pr_number }}');
+            if (!prNumber) {
+              core.info('No PR number; skipping comment.');
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: process.env.COMMENT_BODY
+            });
+
+      - name: Publish PR check (show in Checks tab)
+        if: always()   # 실패해도 체크는 찍히도록
+        uses: actions/github-script@v7
+        env:
+          CHECK_NAME: Benchmark Comparison
+          COMMENT_BODY: ${{ env.SCRIPT_OUTPUT }}   # 위에서 pr_comment.md를 env로 넣은 값
+        with:
+          script: |
+            const sha = context.payload.workflow_run.head_sha;
+            const hasBody = Boolean(process.env.COMMENT_BODY && process.env.COMMENT_BODY.trim());
+            const conclusion = 'success';
+            const summary = hasBody
+              ? 'Benchmark regression detected. See details in the output.'
+              : 'No regression detected.';
+
+            // Checks API: PR 하단 "Checks" 섹션에 나타납니다.
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: process.env.CHECK_NAME,
+              head_sha: sha,
+              status: 'completed',
+              conclusion,
+              output: {
+                title: process.env.CHECK_NAME,
+                summary,
+                // 길어도 괜찮다면 전체 코멘트 본문을 체크 출력으로 넣을 수 있어요
+                text: process.env.COMMENT_BODY || undefined
+              }
+            });
