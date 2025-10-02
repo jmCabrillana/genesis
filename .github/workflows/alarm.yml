@@ -326,7 +326,7 @@ jobs:
         if: always()   # 실패해도 체크는 찍히도록
         uses: actions/github-script@v7
         env:
-          CHECK_NAME: Benchmark Comparison & Alarm Regression
+          CHECK_NAME: Benchmark Comparison
           COMMENT_BODY: ${{ env.SCRIPT_OUTPUT }}   # 위에서 pr_comment.md를 env로 넣은 값
         with:
           script: |
