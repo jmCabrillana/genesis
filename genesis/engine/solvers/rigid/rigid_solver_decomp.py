@@ -4235,12 +4235,14 @@ def func_forward_dynamics(
         links_info=links_info,
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=IS_BACKWARD,
     )
     func_compute_qacc(
         dofs_state=dofs_state,
         entities_info=entities_info,
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=IS_BACKWARD,
     )
 
 
@@ -5981,49 +5983,59 @@ def func_bias_force(
     links_info: array_class.LinksInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
 ):
     _B = dofs_state.ctrl_mode.shape[1]
     n_links = links_info.root_idx.shape[0]
 
-    if ti.static(static_rigid_sim_config.use_hibernation):
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_b in range(_B):
-            for i_l_ in range(rigid_global_info.n_awake_links[i_b]):
-                i_l = rigid_global_info.awake_links[i_l_, i_b]
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_0, i_b in (
+        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_links, _B)
+    ):
+        for i_1 in (
+            (
+                # Dynamic inner loop for forward pass
+                range(rigid_global_info.n_awake_links[i_b])
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else range(1)
+            )
+            if ti.static(not is_backward)
+            else (
+                # Static inner loop for backward pass
+                ti.static(range(static_rigid_sim_config.max_n_awake_links))
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else ti.static(range(1))
+            )
+        ):
+            if i_1 < (
+                rigid_global_info.n_awake_links[i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 1
+            ):
+                i_l = (
+                    rigid_global_info.awake_links[i_1, i_b]
+                    if ti.static(static_rigid_sim_config.use_hibernation)
+                    else i_0
+                )
                 I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
 
-                for i_d in range(links_info.dof_start[I_l], links_info.dof_end[I_l]):
-                    dofs_state.qf_bias[i_d, i_b] = dofs_state.cdof_ang[i_d, i_b].dot(
-                        links_state.cfrc_ang[i_l, i_b]
-                    ) + dofs_state.cdof_vel[i_d, i_b].dot(links_state.cfrc_vel[i_l, i_b])
+                for i_d_ in (
+                    range(links_info.dof_start[I_l], links_info.dof_end[I_l])
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_link))
+                ):
+                    i_d = i_d_ if ti.static(not is_backward) else (i_d_ + links_info.dof_start[I_l])
+                    if i_d < links_info.dof_end[I_l]:
+                        dofs_state.qf_bias[i_d, i_b] = dofs_state.cdof_ang[i_d, i_b].dot(
+                            links_state.cfrc_ang[i_l, i_b]
+                        ) + dofs_state.cdof_vel[i_d, i_b].dot(links_state.cfrc_vel[i_l, i_b])
 
-                    dofs_state.force[i_d, i_b] = (
-                        dofs_state.qf_passive[i_d, i_b]
-                        - dofs_state.qf_bias[i_d, i_b]
-                        + dofs_state.qf_applied[i_d, i_b]
-                        # + self.dofs_state.qf_actuator[i_d, i_b]
-                    )
+                        dofs_state.force[i_d, i_b] = (
+                            dofs_state.qf_passive[i_d, i_b]
+                            - dofs_state.qf_bias[i_d, i_b]
+                            + dofs_state.qf_applied[i_d, i_b]
+                            # + self.dofs_state.qf_actuator[i_d, i_b]
+                        )
 
-                    dofs_state.qf_smooth[i_d, i_b] = dofs_state.force[i_d, i_b]
-
-    else:
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_l, i_b in ti.ndrange(n_links, _B):
-            I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
-
-            for i_d in range(links_info.dof_start[I_l], links_info.dof_end[I_l]):
-                dofs_state.qf_bias[i_d, i_b] = dofs_state.cdof_ang[i_d, i_b].dot(
-                    links_state.cfrc_ang[i_l, i_b]
-                ) + dofs_state.cdof_vel[i_d, i_b].dot(links_state.cfrc_vel[i_l, i_b])
-
-                dofs_state.force[i_d, i_b] = (
-                    dofs_state.qf_passive[i_d, i_b]
-                    - dofs_state.qf_bias[i_d, i_b]
-                    + dofs_state.qf_applied[i_d, i_b]
-                    # + self.dofs_state.qf_actuator[i_d, i_b]
-                )
-
-                dofs_state.qf_smooth[i_d, i_b] = dofs_state.force[i_d, i_b]
+                        dofs_state.qf_smooth[i_d, i_b] = dofs_state.force[i_d, i_b]
 
 
 @ti.func
@@ -6032,6 +6044,7 @@ def func_compute_qacc(
     entities_info: array_class.EntitiesInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
 ):
     _B = dofs_state.ctrl_mode.shape[1]
     n_entities = entities_info.n_links.shape[0]
