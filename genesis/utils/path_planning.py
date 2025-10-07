@@ -439,6 +439,7 @@ class RRT(PathPlanner):
                         links_state,
                         rigid_global_info,
                         self._solver._static_rigid_sim_config,
+                        force_update_fixed_geoms=False,
                     )
 
     @ti.kernel
@@ -808,6 +809,7 @@ class RRTConnect(PathPlanner):
                         links_state,
                         rigid_global_info,
                         self._solver._static_rigid_sim_config,
+                        force_update_fixed_geoms=False,
                     )
 
     @ti.kernel

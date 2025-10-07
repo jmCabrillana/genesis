@@ -1,15 +1,13 @@
 name: Examples (CPU)
 
 on:
-  workflow_dispatch:
-  push:
+  pull_request:
     branches:
       - main
-  pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   run-examples:
@@ -61,7 +59,7 @@ jobs:
         run: |
           pip install --upgrade pip setuptools wheel
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e '.[dev]'
+          pip install -e '.[dev]' pynput
 
       - name: Run examples suite
         run: |

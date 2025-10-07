@@ -2,13 +2,10 @@ import numpy as np
 import torch
 import trimesh
 
-import gstaichi as ti
-
 import genesis as gs
 import genesis.utils.geom as gu
 import genesis.utils.mesh as mu
 import genesis.utils.particle as pu
-
 from genesis.ext import pyrender
 from genesis.ext.pyrender.jit_render import JITRenderer
 from genesis.utils.misc import tensor_to_array, ti_to_numpy
@@ -806,6 +803,9 @@ class RasterizerContext:
                         update_data = self._scene.reorder_vertices(node, vertices)
                         buffer_updates[self._scene.get_buffer_id(node, "pos")] = update_data
 
+    def update_sensors(self):
+        self.sim._sensor_manager.draw_debug(self)
+
     def on_lights(self):
         for light in self.lights:
             self.add_light(light)
@@ -923,9 +923,9 @@ class RasterizerContext:
     def clear_debug_objects(self):
         self.clear_external_nodes()
 
-    def update(self):
+    def update(self, force_render: bool = False):
         # Early return if already updated previously
-        if self._t >= self.scene._t:
+        if not force_render and self._t >= self.scene._t:
             return
 
         self._t = self.scene._t
@@ -934,7 +934,7 @@ class RasterizerContext:
         self.clear_dynamic_nodes()
 
         # update variables not used in simulation
-        self.visualizer.update_visual_states()
+        self.visualizer.update_visual_states(force_render)
 
         # Reset scene bounds to trigger recomputation. They are involved in shadow map
         self._scene._bounds = None
@@ -949,6 +949,7 @@ class RasterizerContext:
         self.update_sph(self.buffer)
         self.update_pbd(self.buffer)
         self.update_fem(self.buffer)
+        self.update_sensors()
 
     def add_light(self, light):
         # light direction is light pose's -z frame
