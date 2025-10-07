@@ -272,8 +272,11 @@ class RigidSolver(Solver):
             n_equalities_candidate=self.n_equalities_candidate,
             hibernation_thresh_acc=getattr(self, "_hibernation_thresh_acc", 0.0),
             hibernation_thresh_vel=getattr(self, "_hibernation_thresh_vel", 0.0),
-            requires_grad=True,  # getattr(self._sim.options, "requires_grad", False), TODO: change to getattr, True for debugging
+            requires_grad=getattr(self._sim.options, "requires_grad", False),
         )
+
+        if self._static_rigid_sim_config.requires_grad and self._static_rigid_sim_config.use_hibernation:
+            gs.raise_exception("Hibernation is not supported when requires_grad is True")
 
         # Add terms for static inner loops, use 0 if not requires_grad to avoid re-compilation
         self._static_rigid_sim_config.max_n_links_per_entity = (
