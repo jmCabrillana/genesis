@@ -997,6 +997,7 @@ class RigidSolver(Solver):
                 rigid_global_info=self._rigid_global_info,
                 static_rigid_sim_config=self._static_rigid_sim_config,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
+                is_backward=IS_BACKWARD,
             )
         else:
             self._func_constraint_force()
@@ -2691,25 +2692,36 @@ def update_qvel(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
     static_rigid_sim_cache_key: array_class.StaticRigidSimCacheKey,
+    is_backward: ti.template(),
 ):
     _B = dofs_state.vel.shape[1]
     n_dofs = dofs_state.vel.shape[0]
-    if ti.static(static_rigid_sim_config.use_hibernation):
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_b in range(_B):
-            for i_d_ in range(static_rigid_sim_cache_key.n_awake_dofs[i_b]):
-                i_d = rigid_global_info.awake_dofs[i_d_, i_b]
+
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_0, i_b in ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_dofs, _B):
+        for i_1 in (
+            (
+                range(rigid_global_info.n_awake_dofs[i_b])
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else range(1)
+            )
+            if ti.static(not is_backward)
+            else (
+                ti.static(range(static_rigid_sim_config.max_n_awake_dofs))
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else ti.static(range(1))
+            )
+        ):
+            if i_1 < (rigid_global_info.n_awake_dofs[i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 1):
+                i_d = (
+                    rigid_global_info.awake_dofs[i_1, i_b]
+                    if ti.static(static_rigid_sim_config.use_hibernation)
+                    else i_0
+                )
                 dofs_state.vel_prev[i_d, i_b] = dofs_state.vel[i_d, i_b]
                 dofs_state.vel[i_d, i_b] = (
                     dofs_state.vel[i_d, i_b] + dofs_state.acc[i_d, i_b] * rigid_global_info.substep_dt[i_b]
                 )
-    else:
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_d, i_b in ti.ndrange(n_dofs, _B):
-            dofs_state.vel_prev[i_d, i_b] = dofs_state.vel[i_d, i_b]
-            dofs_state.vel[i_d, i_b] = (
-                dofs_state.vel[i_d, i_b] + dofs_state.acc[i_d, i_b] * rigid_global_info.substep_dt[i_b]
-            )
 
 
 @ti.kernel(pure=gs.use_pure)
