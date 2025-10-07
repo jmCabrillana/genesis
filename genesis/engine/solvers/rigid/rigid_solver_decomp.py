@@ -3772,13 +3772,37 @@ def func_solve_mass_batched(
     entities_info: array_class.EntitiesInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
 ):
+    # This loop is considered an inner loop
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+    for i_0 in (
+        (
+            # Dynamic inner loop for forward pass
+            range(rigid_global_info.n_awake_entities[i_b])
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else range(entities_info.n_links.shape[0])
+        )
+        if ti.static(not is_backward)
+        else (
+            # Static inner loop for backward pass
+            ti.static(range(static_rigid_sim_config.max_n_awake_entities))
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else ti.static(range(entities_info.n_links.shape[0]))
+        )
+    ):
+        n_entities = entities_info.n_links.shape[0]
 
-    n_entities = entities_info.n_links.shape[0]
-    if ti.static(static_rigid_sim_config.use_hibernation):
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_e_ in range(rigid_global_info.n_awake_entities[i_b]):
-            i_e = rigid_global_info.awake_entities[i_e_, i_b]
+        if i_0 < (
+            rigid_global_info.n_awake_entities[i_b]
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else n_entities
+        ):
+            i_e = (
+                rigid_global_info.awake_entities[i_0, i_b]
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else i_0
+            )
 
             if rigid_global_info._mass_mat_mask[i_e, i_b] == 1:
                 entity_dof_start = entities_info.dof_start[i_e]
@@ -3786,43 +3810,49 @@ def func_solve_mass_batched(
                 n_dofs = entities_info.n_dofs[i_e]
 
                 # Step 1: Solve w st. L^T @ w = y
-                for i_d_ in range(n_dofs):
-                    i_d = entity_dof_end - i_d_ - 1
-                    out[i_d, i_b] = vec[i_d, i_b]
-                    for j_d in range(i_d + 1, entity_dof_end):
-                        out[i_d, i_b] -= rigid_global_info.mass_mat_L[j_d, i_d, i_b] * out[j_d, i_b]
+                for i_d_ in (
+                    range(n_dofs)
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
+                    if i_d_ < n_dofs:
+                        i_d = entity_dof_end - i_d_ - 1
+                        out[i_d, i_b] = vec[i_d, i_b]
+                        for j_d_ in (
+                            range(i_d + 1, entity_dof_end)
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                        ):
+                            j_d = j_d_ if ti.static(not is_backward) else (j_d_ + entities_info.dof_start[i_e])
+                            if j_d >= i_d + 1 and j_d < entity_dof_end:
+                                out[i_d, i_b] -= rigid_global_info.mass_mat_L[j_d, i_d, i_b] * out[j_d, i_b]
 
                 # Step 2: z = D^{-1} w
-                for i_d in range(entity_dof_start, entity_dof_end):
-                    out[i_d, i_b] *= rigid_global_info.mass_mat_D_inv[i_d, i_b]
+                for i_d_ in (
+                    range(entity_dof_start, entity_dof_end)
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
+                    i_d = i_d_ if ti.static(not is_backward) else (i_d_ + entities_info.dof_start[i_e])
+                    if i_d < entity_dof_end:
+                        out[i_d, i_b] *= rigid_global_info.mass_mat_D_inv[i_d, i_b]
 
                 # Step 3: Solve x st. L @ x = z
-                for i_d in range(entity_dof_start, entity_dof_end):
-                    for j_d in range(entity_dof_start, i_d):
-                        out[i_d, i_b] -= rigid_global_info.mass_mat_L[i_d, j_d, i_b] * out[j_d, i_b]
-    else:
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_e in range(n_entities):
-            if rigid_global_info._mass_mat_mask[i_e, i_b] == 1:
-                entity_dof_start = entities_info.dof_start[i_e]
-                entity_dof_end = entities_info.dof_end[i_e]
-                n_dofs = entities_info.n_dofs[i_e]
-
-                # Step 1: Solve w st. L^T @ w = y
-                for i_d_ in range(n_dofs):
-                    i_d = entity_dof_end - i_d_ - 1
-                    out[i_d, i_b] = vec[i_d, i_b]
-                    for j_d in range(i_d + 1, entity_dof_end):
-                        out[i_d, i_b] -= rigid_global_info.mass_mat_L[j_d, i_d, i_b] * out[j_d, i_b]
-
-                # Step 2: z = D^{-1} w
-                for i_d in range(entity_dof_start, entity_dof_end):
-                    out[i_d, i_b] *= rigid_global_info.mass_mat_D_inv[i_d, i_b]
-
-                # Step 3: Solve x st. L @ x = z
-                for i_d in range(entity_dof_start, entity_dof_end):
-                    for j_d in range(entity_dof_start, i_d):
-                        out[i_d, i_b] -= rigid_global_info.mass_mat_L[i_d, j_d, i_b] * out[j_d, i_b]
+                for i_d_ in (
+                    range(entity_dof_start, entity_dof_end)
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
+                    i_d = i_d_ if ti.static(not is_backward) else (i_d_ + entities_info.dof_start[i_e])
+                    if i_d < entity_dof_end:
+                        for j_d_ in (
+                            range(entity_dof_start, i_d)
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                        ):
+                            j_d = j_d_ if ti.static(not is_backward) else (j_d_ + entities_info.dof_start[i_e])
+                            if j_d < i_d:
+                                out[i_d, i_b] -= rigid_global_info.mass_mat_L[i_d, j_d, i_b] * out[j_d, i_b]
 
 
 @ti.func
@@ -3832,7 +3862,9 @@ def func_solve_mass(
     entities_info: array_class.EntitiesInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
 ):
+    # This loop must be the outermost loop to be differentiable
     _B = out.shape[1]
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
     for i_b in range(_B):
@@ -3843,6 +3875,7 @@ def func_solve_mass(
             entities_info=entities_info,
             rigid_global_info=rigid_global_info,
             static_rigid_sim_config=static_rigid_sim_config,
+            is_backward=is_backward,
         )
 
 
@@ -4427,6 +4460,7 @@ def func_implicit_damping(
         entities_info=entities_info,
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=IS_BACKWARD,
     )
 
     # Disable pre-computed factorization mask right away
@@ -6055,22 +6089,45 @@ def func_compute_qacc(
         entities_info=entities_info,
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
+        is_backward=is_backward,
     )
 
-    if ti.static(static_rigid_sim_config.use_hibernation):
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_b in range(_B):
-            for i_e_ in range(rigid_global_info.n_awake_entities[i_b]):
-                i_e = rigid_global_info.awake_entities[i_e_, i_b]
-                for i_d1_ in range(entities_info.n_dofs[i_e]):
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+    for i_0, i_b in (
+        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_entities, _B)
+    ):
+        for i_1 in (
+            (
+                # Dynamic inner loop for forward pass
+                range(rigid_global_info.n_awake_entities[i_b])
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else range(1)
+            )
+            if ti.static(not is_backward)
+            else (
+                # Static inner loop for backward pass
+                ti.static(range(static_rigid_sim_config.max_n_awake_entities))
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else ti.static(range(1))
+            )
+        ):
+            if i_1 < (
+                rigid_global_info.n_awake_entities[i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 1
+            ):
+                i_e = (
+                    rigid_global_info.awake_entities[i_1, i_b]
+                    if ti.static(static_rigid_sim_config.use_hibernation)
+                    else i_0
+                )
+
+                for i_d1_ in (
+                    range(entities_info.n_dofs[i_e])
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
                     i_d1 = entities_info.dof_start[i_e] + i_d1_
-                    dofs_state.acc[i_d1, i_b] = dofs_state.acc_smooth[i_d1, i_b]
-    else:
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_e, i_b in ti.ndrange(n_entities, _B):
-            for i_d1_ in range(entities_info.n_dofs[i_e]):
-                i_d1 = entities_info.dof_start[i_e] + i_d1_
-                dofs_state.acc[i_d1, i_b] = dofs_state.acc_smooth[i_d1, i_b]
+                    if i_d1 < entities_info.dof_end[i_e]:
+                        dofs_state.acc[i_d1, i_b] = dofs_state.acc_smooth[i_d1, i_b]
 
 
 @ti.func
