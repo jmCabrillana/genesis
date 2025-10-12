@@ -2304,7 +2304,7 @@ def get_entities_state(solver):
                     setattr(self, k, v)
 
         return ClassEntitiesState()
-    
+
 
 # =========================================== RigidAdjointCache ===========================================
 @dataclasses.dataclass
@@ -2316,7 +2316,7 @@ class StructRigidAdjointCache:
 def get_rigid_adjoint_cache(solver):
     f_batch = solver._batch_shape
     n_frames = solver._sim.substeps_local + 1
-    
+
     kwargs = {
         "qpos": V(dtype=gs.ti_float, shape=f_batch((n_frames, solver.n_qs_))),
         "dofs_vel": V(dtype=gs.ti_float, shape=f_batch((n_frames, solver.n_dofs_))),
@@ -2436,7 +2436,9 @@ class DataManager:
             # self.links_state_adjoint_cache = get_links_state_adjoint_cache(solver)
             # self.joints_state_adjoint_cache = get_joints_state_adjoint_cache(solver)
             # self.geoms_state_adjoint_cache = get_geoms_state_adjoint_cache(solver)
-            self.rigid_adjoint_cache = get_rigid_adjoint_cache(solver)
+            pass
+
+        self.rigid_adjoint_cache = get_rigid_adjoint_cache(solver)
 
 
 # we will use struct for DofsState and DofsInfo after Hugh adds array_struct feature to gstaichi

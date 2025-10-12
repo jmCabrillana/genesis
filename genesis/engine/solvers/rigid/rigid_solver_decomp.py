@@ -242,7 +242,7 @@ class RigidSolver(Solver):
         self._static_rigid_sim_cache_key = array_class.get_static_rigid_sim_cache_key(self)
         self._static_rigid_sim_config = self.StaticRigidSimConfig(
             para_level=self.sim._para_level,
-            requires_grad=True, # getattr(self.sim.options, "requires_grad", False), TODO: restore
+            requires_grad=getattr(self.sim.options, "requires_grad", False),
             use_hibernation=getattr(self, "_use_hibernation", False),
             use_contact_island=getattr(self, "_use_contact_island", False),
             batch_links_info=getattr(self._options, "batch_links_info", False),
@@ -310,6 +310,7 @@ class RigidSolver(Solver):
             self.data_manager = array_class.DataManager(self)
 
             self._rigid_global_info = self.data_manager.rigid_global_info
+            self._rigid_adjoint_cache = self.data_manager.rigid_adjoint_cache
             if self._use_hibernation:
                 self.n_awake_dofs = self._rigid_global_info.n_awake_dofs
                 self.awake_dofs = self._rigid_global_info.awake_dofs
@@ -317,8 +318,6 @@ class RigidSolver(Solver):
                 self.awake_links = self._rigid_global_info.awake_links
                 self.n_awake_entities = self._rigid_global_info.n_awake_entities
                 self.awake_entities = self._rigid_global_info.awake_entities
-            if self._static_rigid_sim_config.requires_grad:
-                self._rigid_adjoint_cache = self.data_manager.rigid_adjoint_cache
 
             self._init_mass_mat()
             self._init_dof_fields()
@@ -1021,14 +1020,14 @@ class RigidSolver(Solver):
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
             # timer.stamp("kernel_step_2")
-            
+
             kernel_save_adjoint_cache(
-                f=self._sim.cur_substep_local+1,
+                f=self._sim.cur_substep_local + 1,
                 dofs_state=self.dofs_state,
                 rigid_global_info=self._rigid_global_info,
                 rigid_adjoint_cache=self._rigid_adjoint_cache,
             )
-                
+
             if not self._static_rigid_sim_config.enable_mujoco_compatibility:
                 kernel_update_cartesian_space(
                     links_state=self.links_state,
@@ -4330,7 +4329,8 @@ def kernel_clear_external_force(
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
     )
-    
+
+
 @ti.kernel(pure=gs.use_pure)
 def kernel_update_cartesian_space(
     links_state: array_class.LinksState,
@@ -6291,9 +6291,9 @@ def func_integrate(
                         )
                         vel = ti.Vector(
                             [
-                                dofs_state.vel[dof_start, i_b],
-                                dofs_state.vel[dof_start + 1, i_b],
-                                dofs_state.vel[dof_start + 2, i_b],
+                                dofs_state.vel_next[dof_start, i_b],
+                                dofs_state.vel_next[dof_start + 1, i_b],
+                                dofs_state.vel_next[dof_start + 2, i_b],
                             ]
                         )
                         pos = pos + vel * rigid_global_info.substep_dt[i_b]
@@ -6312,9 +6312,9 @@ def func_integrate(
                         ang = (
                             ti.Vector(
                                 [
-                                    dofs_state.vel[dof_start + rot_offset + 0, i_b],
-                                    dofs_state.vel[dof_start + rot_offset + 1, i_b],
-                                    dofs_state.vel[dof_start + rot_offset + 2, i_b],
+                                    dofs_state.vel_next[dof_start + rot_offset + 0, i_b],
+                                    dofs_state.vel_next[dof_start + rot_offset + 1, i_b],
+                                    dofs_state.vel_next[dof_start + rot_offset + 2, i_b],
                                 ]
                             )
                             * rigid_global_info.substep_dt[i_b]
@@ -6327,9 +6327,10 @@ def func_integrate(
                         for j in range(q_end - q_start):
                             rigid_global_info.qpos_next[q_start + j, i_b] = (
                                 rigid_global_info.qpos[q_start + j, i_b]
-                                + dofs_state.vel[dof_start + j, i_b] * rigid_global_info.substep_dt[i_b]
+                                + dofs_state.vel_next[dof_start + j, i_b] * rigid_global_info.substep_dt[i_b]
                             )
-                            
+
+
 @ti.kernel(pure=gs.use_pure)
 def kernel_save_adjoint_cache(
     f: ti.int32,
@@ -6340,11 +6341,11 @@ def kernel_save_adjoint_cache(
     n_dofs = dofs_state.vel.shape[0]
     n_qs = rigid_global_info.qpos.shape[0]
     _B = dofs_state.vel.shape[1]
-    
+
     for i_d, i_b in ti.ndrange(n_dofs, _B):
         rigid_adjoint_cache.dofs_vel[f, i_d, i_b] = dofs_state.vel_next[i_d, i_b]
         dofs_state.vel[i_d, i_b] = dofs_state.vel_next[i_d, i_b]
-        
+
     for i_q, i_b in ti.ndrange(n_qs, _B):
         rigid_adjoint_cache.qpos[f, i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
         rigid_global_info.qpos[i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
