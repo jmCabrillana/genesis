@@ -967,7 +967,7 @@ class RigidSolver(Solver):
         else:
             self.constraint_solver = ConstraintSolver(self)
 
-    def substep(self):
+    def substep(self, f):
         # from genesis.utils.tools import create_timer
         from genesis.engine.couplers import SAPCoupler
 
@@ -1022,7 +1022,7 @@ class RigidSolver(Solver):
             # timer.stamp("kernel_step_2")
 
             kernel_save_adjoint_cache(
-                f=self._sim.cur_substep_local + 1,
+                f=f + 1,
                 dofs_state=self.dofs_state,
                 rigid_global_info=self._rigid_global_info,
                 rigid_adjoint_cache=self._rigid_adjoint_cache,
@@ -1336,7 +1336,7 @@ class RigidSolver(Solver):
 
     def substep_pre_coupling(self, f):
         if self.is_active():
-            self.substep()
+            self.substep(f)
 
     def substep_pre_coupling_grad(self, f):
         pass
@@ -5636,16 +5636,16 @@ def func_clear_external_force(
     _B = links_state.pos.shape[1]
     n_links = links_state.pos.shape[0]
 
-    if ti.static(static_rigid_sim_config.use_hibernation):
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_b in range(_B):
-            for i_l_ in range(rigid_global_info.n_awake_links[i_b]):
-                i_l = rigid_global_info.awake_links[i_l_, i_b]
-                links_state.cfrc_applied_ang[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
-                links_state.cfrc_applied_vel[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
-    else:
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_l, i_b in ti.ndrange(n_links, _B):
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+    for i_0, i_b in (
+        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_links, _B)
+    ):
+        for i_1 in (
+            range(rigid_global_info.n_awake_links[i_b])
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else range(1)
+        ):
+            i_l = rigid_global_info.awake_links[i_1, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else i_0
             links_state.cfrc_applied_ang[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
             links_state.cfrc_applied_vel[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
 
