@@ -17,7 +17,7 @@ from genesis.utils import mesh as mu
 from genesis.utils import mjcf as mju
 from genesis.utils import terrain as tu
 from genesis.utils import urdf as uu
-from genesis.utils.misc import ALLOCATE_TENSOR_WARNING, DeprecationError, ti_to_torch
+from genesis.utils.misc import ALLOCATE_TENSOR_WARNING, DeprecationError, ti_to_torch, to_gs_tensor
 
 from ..base_entity import Entity
 from .rigid_equality import RigidEquality
@@ -94,6 +94,23 @@ class RigidEntity(Entity):
         self._is_built: bool = False
 
         self._load_model()
+
+        self.init_tgt_vars()
+
+    def init_tgt_keys(self):
+
+        self._tgt_keys = ["pos", "quat"]
+
+    def init_tgt_vars(self):
+
+        # temp variable to store targets for next step
+        self._tgt = dict()
+        self._tgt_buffer = dict()
+        self.init_tgt_keys()
+
+        for key in self._tgt_keys:
+            self._tgt[key] = None
+            self._tgt_buffer[key] = list()
 
     def _load_model(self):
         self._links = gs.List()
@@ -1602,6 +1619,45 @@ class RigidEntity(Entity):
     # ------------------------------------------------------------------------------------
     # ---------------------------------- control & io ------------------------------------
     # ------------------------------------------------------------------------------------
+    def process_input(self, in_backward=False):
+        if in_backward:
+            # use negative index because buffer length might not be full
+            index = self._sim.cur_step_local - self._sim._steps_local
+            for key in self._tgt_keys:
+                self._tgt[key] = self._tgt_buffer[key][index]
+
+        else:
+            for key in self._tgt_keys:
+                self._tgt_buffer[key].append(self._tgt[key])
+
+        # set_pos followed by set_vel, because set_pos resets velocity.
+        if self._tgt["pos"] is not None:
+            _pos = self._tgt["pos"]["pos"]
+            _envs_idx = self._tgt["pos"]["envs_idx"]
+            _relative = self._tgt["pos"]["relative"]
+            _zero_velocity = self._tgt["pos"]["zero_velocity"]
+            _unsafe = self._tgt["pos"]["unsafe"]
+
+            _pos.assert_contiguous()
+            _pos.assert_sceneless()
+            self.set_pos(_pos, envs_idx=_envs_idx, relative=_relative, zero_velocity=_zero_velocity, unsafe=_unsafe)
+
+        if self._tgt["quat"] is not None:
+            _quat = self._tgt["quat"]["quat"]
+            _envs_idx = self._tgt["quat"]["envs_idx"]
+            _relative = self._tgt["quat"]["relative"]
+            _zero_velocity = self._tgt["quat"]["zero_velocity"]
+            _unsafe = self._tgt["quat"]["unsafe"]
+
+            _quat.assert_contiguous()
+            _quat.assert_sceneless()
+            self.set_quat(_quat, envs_idx=_envs_idx, relative=_relative, zero_velocity=_zero_velocity, unsafe=_unsafe)
+
+        for key in self._tgt_keys:
+            self._tgt[key] = None
+
+    def process_input_grad(self):
+        pass
 
     def get_joint(self, name=None, uid=None):
         """
@@ -1946,6 +2002,15 @@ class RigidEntity(Entity):
         envs_idx : None | array_like, optional
             The indices of the environments. If None, all environments will be considered. Defaults to None.
         """
+        # Save in [tgt] for backward pass
+        self._tgt["pos"] = {
+            "pos": to_gs_tensor(pos),
+            "envs_idx": envs_idx,
+            "relative": relative,
+            "zero_velocity": zero_velocity,
+            "unsafe": unsafe,
+        }
+
         if not unsafe:
             _pos = torch.as_tensor(pos, dtype=gs.tc_float, device=gs.device).contiguous()
             if _pos is not pos:
@@ -1980,6 +2045,14 @@ class RigidEntity(Entity):
         envs_idx : None | array_like, optional
             The indices of the environments. If None, all environments will be considered. Defaults to None.
         """
+        # Save in [tgt] for backward pass
+        self._tgt["quat"] = {
+            "quat": to_gs_tensor(quat),
+            "envs_idx": envs_idx,
+            "relative": relative,
+            "zero_velocity": zero_velocity,
+            "unsafe": unsafe,
+        }
         if not unsafe:
             _quat = torch.as_tensor(quat, dtype=gs.tc_float, device=gs.device).contiguous()
             if _quat is not quat:
