@@ -28,6 +28,7 @@ class StructRigidGlobalInfo:
     awake_links: V_ANNOTATION
     qpos0: V_ANNOTATION
     qpos: V_ANNOTATION
+    qpos_next: V_ANNOTATION
     links_T: V_ANNOTATION
     envs_offset: V_ANNOTATION
     geoms_init_AABB: V_ANNOTATION
@@ -89,6 +90,7 @@ def get_rigid_global_info(solver):
         "awake_links": V(dtype=gs.ti_int, shape=f_batch(solver.n_links)),
         "qpos0": V(dtype=gs.ti_float, shape=f_batch(solver.n_qs_)),
         "qpos": V(dtype=gs.ti_float, shape=f_batch(solver.n_qs_)),
+        "qpos_next": V(dtype=gs.ti_float, shape=f_batch(solver.n_qs_)),
         "links_T": V_MAT(n=4, m=4, dtype=gs.ti_float, shape=solver.n_links),
         "envs_offset": V_VEC(3, dtype=gs.ti_float, shape=f_batch()),
         "geoms_init_AABB": V_VEC(3, dtype=gs.ti_float, shape=(solver.n_geoms_, 8)),
@@ -1386,6 +1388,7 @@ class StructDofsState:
     pos: V_ANNOTATION
     vel: V_ANNOTATION
     vel_prev: V_ANNOTATION
+    vel_next: V_ANNOTATION
     acc: V_ANNOTATION
     acc_smooth: V_ANNOTATION
     qf_smooth: V_ANNOTATION
@@ -1417,6 +1420,7 @@ def get_dofs_state(solver):
         "pos": V(dtype=gs.ti_float, shape=shape),
         "vel": V(dtype=gs.ti_float, shape=shape),
         "vel_prev": V(dtype=gs.ti_float, shape=shape),
+        "vel_next": V(dtype=gs.ti_float, shape=shape),
         "acc": V(dtype=gs.ti_float, shape=shape),
         "acc_smooth": V(dtype=gs.ti_float, shape=shape),
         "qf_smooth": V(dtype=gs.ti_float, shape=shape),
@@ -2300,6 +2304,35 @@ def get_entities_state(solver):
                     setattr(self, k, v)
 
         return ClassEntitiesState()
+    
+
+# =========================================== RigidAdjointCache ===========================================
+@dataclasses.dataclass
+class StructRigidAdjointCache:
+    qpos: V_ANNOTATION
+    dofs_vel: V_ANNOTATION
+
+
+def get_rigid_adjoint_cache(solver):
+    f_batch = solver._batch_shape
+    n_frames = solver._sim.substeps_local + 1
+    
+    kwargs = {
+        "qpos": V(dtype=gs.ti_float, shape=f_batch((n_frames, solver.n_qs_))),
+        "dofs_vel": V(dtype=gs.ti_float, shape=f_batch((n_frames, solver.n_dofs_))),
+    }
+
+    if use_ndarray:
+        return StructRigidAdjointCache(**kwargs)
+    else:
+
+        @ti.data_oriented
+        class ClassRigidAdjointCache:
+            def __init__(self):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        return ClassRigidAdjointCache()
 
 
 # =========================================== StaticRigidSimConfig ===========================================
@@ -2398,11 +2431,12 @@ class DataManager:
 
         if solver._static_rigid_sim_config.requires_grad:
             # Data structures required for backward pass
-            self.rigid_global_info_adjoint_cache = get_rigid_global_info_adjoint_cache(solver)
-            self.dofs_state_adjoint_cache = get_dofs_state_adjoint_cache(solver)
-            self.links_state_adjoint_cache = get_links_state_adjoint_cache(solver)
-            self.joints_state_adjoint_cache = get_joints_state_adjoint_cache(solver)
-            self.geoms_state_adjoint_cache = get_geoms_state_adjoint_cache(solver)
+            # self.rigid_global_info_adjoint_cache = get_rigid_global_info_adjoint_cache(solver)
+            # self.dofs_state_adjoint_cache = get_dofs_state_adjoint_cache(solver)
+            # self.links_state_adjoint_cache = get_links_state_adjoint_cache(solver)
+            # self.joints_state_adjoint_cache = get_joints_state_adjoint_cache(solver)
+            # self.geoms_state_adjoint_cache = get_geoms_state_adjoint_cache(solver)
+            self.rigid_adjoint_cache = get_rigid_adjoint_cache(solver)
 
 
 # we will use struct for DofsState and DofsInfo after Hugh adds array_struct feature to gstaichi
@@ -2440,5 +2474,6 @@ DofsStateAdjointCache = ti.template() if not use_ndarray else StructDofsState
 LinksStateAdjointCache = ti.template() if not use_ndarray else StructLinksState
 JointsStateAdjointCache = ti.template() if not use_ndarray else StructJointsState
 GeomsStateAdjointCache = ti.template() if not use_ndarray else StructGeomsState
+RigidAdjointCache = ti.template() if not use_ndarray else StructRigidAdjointCache
 DiffContactInput = ti.template() if not use_ndarray else StructDiffContactInput
 AABBState = ti.template()

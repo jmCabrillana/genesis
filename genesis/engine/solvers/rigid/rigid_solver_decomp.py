@@ -242,7 +242,7 @@ class RigidSolver(Solver):
         self._static_rigid_sim_cache_key = array_class.get_static_rigid_sim_cache_key(self)
         self._static_rigid_sim_config = self.StaticRigidSimConfig(
             para_level=self.sim._para_level,
-            requires_grad=getattr(self.sim.options, "requires_grad", False),
+            requires_grad=True, # getattr(self.sim.options, "requires_grad", False), TODO: restore
             use_hibernation=getattr(self, "_use_hibernation", False),
             use_contact_island=getattr(self, "_use_contact_island", False),
             batch_links_info=getattr(self._options, "batch_links_info", False),
@@ -317,6 +317,8 @@ class RigidSolver(Solver):
                 self.awake_links = self._rigid_global_info.awake_links
                 self.n_awake_entities = self._rigid_global_info.n_awake_entities
                 self.awake_entities = self._rigid_global_info.awake_entities
+            if self._static_rigid_sim_config.requires_grad:
+                self._rigid_adjoint_cache = self.data_manager.rigid_adjoint_cache
 
             self._init_mass_mat()
             self._init_dof_fields()
@@ -997,6 +999,7 @@ class RigidSolver(Solver):
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
                 is_backward=USE_BACKWARD_LOGIC_IN_FORWARD,
             )
+            raise NotImplementedError("SAPCoupler is not supported yet")
         else:
             self._func_constraint_force()
             # timer.stamp("constraint_force")
@@ -1018,6 +1021,29 @@ class RigidSolver(Solver):
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
             # timer.stamp("kernel_step_2")
+            
+            kernel_save_adjoint_cache(
+                f=self._sim.cur_substep_local+1,
+                dofs_state=self.dofs_state,
+                rigid_global_info=self._rigid_global_info,
+                rigid_adjoint_cache=self._rigid_adjoint_cache,
+            )
+                
+            if not self._static_rigid_sim_config.enable_mujoco_compatibility:
+                kernel_update_cartesian_space(
+                    links_state=self.links_state,
+                    links_info=self.links_info,
+                    joints_state=self.joints_state,
+                    joints_info=self.joints_info,
+                    dofs_state=self.dofs_state,
+                    dofs_info=self.dofs_info,
+                    geoms_info=self.geoms_info,
+                    geoms_state=self.geoms_state,
+                    entities_info=self.entities_info,
+                    rigid_global_info=self._rigid_global_info,
+                    static_rigid_sim_config=self._static_rigid_sim_config,
+                    force_update_fixed_geoms=False,
+                )
 
     def _kernel_detect_collision(self):
         self.collider.clear()
@@ -1343,6 +1369,7 @@ class RigidSolver(Solver):
                 contact_island_state=self.constraint_solver.contact_island.contact_island_state,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
+            raise NotImplementedError("SAPCoupler is not supported yet")
 
     def substep_post_coupling_grad(self, f):
         pass
@@ -4303,6 +4330,40 @@ def kernel_clear_external_force(
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
     )
+    
+@ti.kernel(pure=gs.use_pure)
+def kernel_update_cartesian_space(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    geoms_info: array_class.GeomsInfo,
+    geoms_state: array_class.GeomsState,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+    force_update_fixed_geoms: ti.template(),
+):
+    _B = links_state.pos.shape[1]
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_b in range(_B):
+        func_update_cartesian_space(
+            i_b=i_b,
+            links_state=links_state,
+            links_info=links_info,
+            joints_state=joints_state,
+            joints_info=joints_info,
+            dofs_state=dofs_state,
+            dofs_info=dofs_info,
+            geoms_info=geoms_info,
+            geoms_state=geoms_state,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            force_update_fixed_geoms=force_update_fixed_geoms,
+        )
 
 
 @ti.func
@@ -4563,26 +4624,6 @@ def kernel_step_2(
             rigid_global_info=rigid_global_info,
             static_rigid_sim_config=static_rigid_sim_config,
         )
-
-    if ti.static(not static_rigid_sim_config.enable_mujoco_compatibility):
-        _B = links_state.pos.shape[1]
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_b in range(_B):
-            func_update_cartesian_space(
-                i_b=i_b,
-                links_state=links_state,
-                links_info=links_info,
-                joints_state=joints_state,
-                joints_info=joints_info,
-                dofs_state=dofs_state,
-                dofs_info=dofs_info,
-                geoms_info=geoms_info,
-                geoms_state=geoms_state,
-                entities_info=entities_info,
-                rigid_global_info=rigid_global_info,
-                static_rigid_sim_config=static_rigid_sim_config,
-                force_update_fixed_geoms=False,
-            )
 
 
 @ti.kernel(pure=gs.use_pure)
@@ -6199,7 +6240,7 @@ def func_integrate(
                     else i_0
                 )
 
-                dofs_state.vel[i_d, i_b] = (
+                dofs_state.vel_next[i_d, i_b] = (
                     dofs_state.vel[i_d, i_b] + dofs_state.acc[i_d, i_b] * rigid_global_info.substep_dt[i_b]
                 )
 
@@ -6257,7 +6298,7 @@ def func_integrate(
                         )
                         pos = pos + vel * rigid_global_info.substep_dt[i_b]
                         for j in ti.static(range(3)):
-                            rigid_global_info.qpos[q_start + j, i_b] = pos[j]
+                            rigid_global_info.qpos_next[q_start + j, i_b] = pos[j]
                     if joint_type == gs.JOINT_TYPE.SPHERICAL or joint_type == gs.JOINT_TYPE.FREE:
                         rot_offset = 3 if joint_type == gs.JOINT_TYPE.FREE else 0
                         rot = ti.Vector(
@@ -6281,13 +6322,32 @@ def func_integrate(
                         qrot = gu.ti_rotvec_to_quat(ang)
                         rot = gu.ti_transform_quat_by_quat(qrot, rot)
                         for j in ti.static(range(4)):
-                            rigid_global_info.qpos[q_start + j + rot_offset, i_b] = rot[j]
+                            rigid_global_info.qpos_next[q_start + j + rot_offset, i_b] = rot[j]
                     else:
                         for j in range(q_end - q_start):
-                            rigid_global_info.qpos[q_start + j, i_b] = (
+                            rigid_global_info.qpos_next[q_start + j, i_b] = (
                                 rigid_global_info.qpos[q_start + j, i_b]
                                 + dofs_state.vel[dof_start + j, i_b] * rigid_global_info.substep_dt[i_b]
                             )
+                            
+@ti.kernel(pure=gs.use_pure)
+def kernel_save_adjoint_cache(
+    f: ti.int32,
+    dofs_state: array_class.DofsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    rigid_adjoint_cache: array_class.RigidAdjointCache,
+):
+    n_dofs = dofs_state.vel.shape[0]
+    n_qs = rigid_global_info.qpos.shape[0]
+    _B = dofs_state.vel.shape[1]
+    
+    for i_d, i_b in ti.ndrange(n_dofs, _B):
+        rigid_adjoint_cache.dofs_vel[f, i_d, i_b] = dofs_state.vel_next[i_d, i_b]
+        dofs_state.vel[i_d, i_b] = dofs_state.vel_next[i_d, i_b]
+        
+    for i_q, i_b in ti.ndrange(n_qs, _B):
+        rigid_adjoint_cache.qpos[f, i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
+        rigid_global_info.qpos[i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
 
 
 @ti.func
