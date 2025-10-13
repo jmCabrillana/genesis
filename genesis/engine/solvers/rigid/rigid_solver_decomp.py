@@ -10,6 +10,7 @@ import genesis.utils.array_class as array_class
 import genesis.utils.geom as gu
 from genesis.engine.entities import AvatarEntity, DroneEntity, RigidEntity
 from genesis.engine.entities.base_entity import Entity
+from genesis.engine.states.cache import QueriedStates
 from genesis.engine.states.solvers import RigidSolverState
 from genesis.options.solvers import RigidOptions
 from genesis.utils import linalg as lu
@@ -96,6 +97,7 @@ class RigidSolver(Solver):
         self._max_collision_pairs = options.max_collision_pairs
         self._integrator = options.integrator
         self._box_box_detection = options.box_box_detection
+        self._requires_grad = self.sim.options.requires_grad
 
         self._use_contact_island = options.use_contact_island
         self._use_hibernation = options.use_hibernation and options.use_contact_island
@@ -127,6 +129,8 @@ class RigidSolver(Solver):
         self._cur_step = -1
 
         self.qpos: ti.Template | ti.types.NDArray | None = None
+
+        self._queried_states = QueriedStates()
 
     def add_entity(self, idx, material, morph, surface, visualize_contact) -> Entity:
         if isinstance(material, gs.materials.Avatar):
@@ -242,7 +246,7 @@ class RigidSolver(Solver):
         self._static_rigid_sim_cache_key = array_class.get_static_rigid_sim_cache_key(self)
         self._static_rigid_sim_config = self.StaticRigidSimConfig(
             para_level=self.sim._para_level,
-            requires_grad=getattr(self.sim.options, "requires_grad", False),
+            requires_grad=getattr(self, "_requires_grad", False),
             use_hibernation=getattr(self, "_use_hibernation", False),
             use_contact_island=getattr(self, "_use_contact_island", False),
             batch_links_info=getattr(self._options, "batch_links_info", False),
@@ -998,7 +1002,6 @@ class RigidSolver(Solver):
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
                 is_backward=USE_BACKWARD_LOGIC_IN_FORWARD,
             )
-            raise NotImplementedError("SAPCoupler is not supported yet")
         else:
             self._func_constraint_force()
             # timer.stamp("constraint_force")
@@ -1350,6 +1353,7 @@ class RigidSolver(Solver):
                 rigid_global_info=self._rigid_global_info,
                 static_rigid_sim_config=self._static_rigid_sim_config,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
+                is_backward=USE_BACKWARD_LOGIC_IN_FORWARD,
             )
             kernel_step_2(
                 dofs_state=self.dofs_state,
@@ -1368,7 +1372,27 @@ class RigidSolver(Solver):
                 contact_island_state=self.constraint_solver.contact_island.contact_island_state,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
-            raise NotImplementedError("SAPCoupler is not supported yet")
+            kernel_save_adjoint_cache(
+                f=f + 1,
+                dofs_state=self.dofs_state,
+                rigid_global_info=self._rigid_global_info,
+                rigid_adjoint_cache=self._rigid_adjoint_cache,
+            )
+            if not self._static_rigid_sim_config.enable_mujoco_compatibility:
+                kernel_update_cartesian_space(
+                    links_state=self.links_state,
+                    links_info=self.links_info,
+                    joints_state=self.joints_state,
+                    joints_info=self.joints_info,
+                    dofs_state=self.dofs_state,
+                    dofs_info=self.dofs_info,
+                    geoms_info=self.geoms_info,
+                    geoms_state=self.geoms_state,
+                    entities_info=self.entities_info,
+                    rigid_global_info=self._rigid_global_info,
+                    static_rigid_sim_config=self._static_rigid_sim_config,
+                    force_update_fixed_geoms=False,
+                )
 
     def substep_post_coupling_grad(self, f):
         pass
@@ -1405,9 +1429,13 @@ class RigidSolver(Solver):
             static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
         )
 
-    def get_state(self, f):
+    def get_state(self, f=None):
+        s_global = self.sim.cur_step_global
         if self.is_active():
-            state = RigidSolverState(self._scene)
+            if s_global in self._queried_states:
+                return self._queried_states[s_global][0]
+
+            state = RigidSolverState(self._scene, s_global)
 
             # qpos: ti.types.ndarray(),
             # vel: ti.types.ndarray(),
@@ -1437,6 +1465,7 @@ class RigidSolver(Solver):
                 static_rigid_sim_config=self._static_rigid_sim_config,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
+            self._queried_states.append(state)
         else:
             state = None
         return state
@@ -2691,25 +2720,37 @@ def update_qacc_from_qvel_delta(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
     static_rigid_sim_cache_key: array_class.StaticRigidSimCacheKey,
+    is_backward: ti.template(),
 ):
     n_dofs = dofs_state.ctrl_mode.shape[0]
     _B = dofs_state.ctrl_mode.shape[1]
-    if ti.static(static_rigid_sim_config.use_hibernation):
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_b in range(_B):
-            for i_d_ in range(rigid_global_info.n_awake_dofs[i_b]):
-                i_d = rigid_global_info.awake_dofs[i_d_, i_b]
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_0, i_b in ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_dofs, _B):
+        for i_1 in (
+            (
+                # Dynamic inner loop for forward pass
+                range(rigid_global_info.n_awake_dofs[i_b])
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else range(1)
+            )
+            if ti.static(not is_backward)
+            else (
+                # Static inner loop for backward pass
+                ti.static(range(static_rigid_sim_config.max_n_awake_dofs))
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else ti.static(range(1))
+            )
+        ):
+            if i_1 < (rigid_global_info.n_awake_dofs[i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 1):
+                i_d = (
+                    rigid_global_info.awake_dofs[i_1, i_b]
+                    if ti.static(static_rigid_sim_config.use_hibernation)
+                    else i_0
+                )
                 dofs_state.acc[i_d, i_b] = (
                     dofs_state.vel[i_d, i_b] - dofs_state.vel_prev[i_d, i_b]
                 ) / rigid_global_info.substep_dt[i_b]
                 dofs_state.vel[i_d, i_b] = dofs_state.vel_prev[i_d, i_b]
-    else:
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-        for i_d, i_b in ti.ndrange(n_dofs, _B):
-            dofs_state.acc[i_d, i_b] = (
-                dofs_state.vel[i_d, i_b] - dofs_state.vel_prev[i_d, i_b]
-            ) / rigid_global_info.substep_dt[i_b]
-            dofs_state.vel[i_d, i_b] = dofs_state.vel_prev[i_d, i_b]
 
 
 @ti.kernel

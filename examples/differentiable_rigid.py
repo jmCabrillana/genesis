@@ -114,14 +114,14 @@ def main():
         loss = 0
         for i in range(horizon):
             scene.step()
-            target.set_pos(0, goal_pos)
-            target.set_quat(0, goal_quat)
+            target.set_pos(goal_pos)
+            target.set_quat(goal_quat)
             if do_record:
                 cam.render()
 
         box_state = box.get_state()
-        box_pos = box_state.pos[0]
-        box_quat = box_state.quat[0]
+        box_pos = box_state.pos
+        box_quat = box_state.quat
         loss = torch.abs(box_pos - goal_pos).sum() + torch.abs(box_quat - goal_quat).sum()
 
         optimizer.zero_grad()

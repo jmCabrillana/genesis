@@ -18,6 +18,7 @@ from genesis.utils import mjcf as mju
 from genesis.utils import terrain as tu
 from genesis.utils import urdf as uu
 from genesis.utils.misc import ALLOCATE_TENSOR_WARNING, DeprecationError, ti_to_torch, to_gs_tensor
+from genesis.engine.states.entities import RigidEntityState
 
 from ..base_entity import Entity
 from .rigid_equality import RigidEquality
@@ -1658,6 +1659,22 @@ class RigidEntity(Entity):
 
     def process_input_grad(self):
         pass
+
+    @gs.assert_built
+    def get_state(self):
+        state = RigidEntityState(self, self._sim.cur_step_global)
+        solver_state = self._solver.get_state()
+
+        self._kernel_get_base_link_state(
+            f=self._sim.cur_substep_local,
+            pos=state.pos,
+            quat=state.quat,
+        )
+
+        # we store all queried states to track gradient flow
+        self._queried_states.append(state)
+
+        return state
 
     def get_joint(self, name=None, uid=None):
         """
