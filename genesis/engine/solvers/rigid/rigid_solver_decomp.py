@@ -132,6 +132,11 @@ class RigidSolver(Solver):
 
         self._queried_states = QueriedStates()
 
+        self.init_ckpt()
+
+    def init_ckpt(self):
+        self._ckpt = dict()
+
     def add_entity(self, idx, material, morph, surface, visualize_contact) -> Entity:
         if isinstance(material, gs.materials.Avatar):
             EntityClass = AvatarEntity
@@ -975,6 +980,14 @@ class RigidSolver(Solver):
         # from genesis.utils.tools import create_timer
         from genesis.engine.couplers import SAPCoupler
 
+        if f == 0:
+            kernel_save_adjoint_cache(
+                f=f,
+                dofs_state=self.dofs_state,
+                rigid_global_info=self._rigid_global_info,
+                rigid_adjoint_cache=self._rigid_adjoint_cache,
+            )
+
         # timer = create_timer("rigid", level=1, ti_sync=True, skip_first_call=True)
         kernel_step_1(
             links_state=self.links_state,
@@ -1023,6 +1036,11 @@ class RigidSolver(Solver):
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
             # timer.stamp("kernel_step_2")
+
+            kernel_copy_next_to_curr(
+                dofs_state=self.dofs_state,
+                rigid_global_info=self._rigid_global_info,
+            )
 
             kernel_save_adjoint_cache(
                 f=f + 1,
@@ -1551,10 +1569,34 @@ class RigidSolver(Solver):
             entity.process_input_grad()
 
     def save_ckpt(self, ckpt_name):
-        pass
+        if ckpt_name not in self._ckpt:
+            self._ckpt[ckpt_name] = dict()
+            self._ckpt[ckpt_name]["qpos"] = self._rigid_adjoint_cache.qpos.to_numpy()
+            self._ckpt[ckpt_name]["dofs_vel"] = self._rigid_adjoint_cache.dofs_vel.to_numpy()
 
     def load_ckpt(self, ckpt_name):
-        pass
+        self._rigid_adjoint_cache.qpos.from_numpy(self._ckpt[ckpt_name]["qpos"])
+        self._rigid_adjoint_cache.dofs_vel.from_numpy(self._ckpt[ckpt_name]["dofs_vel"])
+
+        # Set first frame
+        self._rigid_global_info.qpos.from_numpy(self._ckpt[ckpt_name]["qpos"])
+        self.dofs_state.vel.from_numpy(self._ckpt[ckpt_name]["dofs_vel"])
+
+        if not self._enable_mujoco_compatibility:
+            kernel_update_cartesian_space(
+                links_state=self.links_state,
+                links_info=self.links_info,
+                joints_state=self.joints_state,
+                joints_info=self.joints_info,
+                dofs_state=self.dofs_state,
+                dofs_info=self.dofs_info,
+                geoms_state=self.geoms_state,
+                geoms_info=self.geoms_info,
+                entities_info=self.entities_info,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+            )
 
     def is_active(self):
         return self.n_links > 0
@@ -6407,6 +6449,22 @@ def func_integrate(
 
 
 @ti.kernel(pure=gs.use_pure)
+def kernel_copy_next_to_curr(
+    dofs_state: array_class.DofsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+):
+    n_dofs = dofs_state.vel.shape[0]
+    n_qs = rigid_global_info.qpos.shape[0]
+    _B = dofs_state.vel.shape[1]
+
+    for i_d, i_b in ti.ndrange(n_dofs, _B):
+        dofs_state.vel[i_d, i_b] = dofs_state.vel_next[i_d, i_b]
+
+    for i_q, i_b in ti.ndrange(n_qs, _B):
+        rigid_global_info.qpos[i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
+
+
+@ti.kernel(pure=gs.use_pure)
 def kernel_save_adjoint_cache(
     f: ti.int32,
     dofs_state: array_class.DofsState,
@@ -6418,12 +6476,10 @@ def kernel_save_adjoint_cache(
     _B = dofs_state.vel.shape[1]
 
     for i_d, i_b in ti.ndrange(n_dofs, _B):
-        rigid_adjoint_cache.dofs_vel[f, i_d, i_b] = dofs_state.vel_next[i_d, i_b]
-        dofs_state.vel[i_d, i_b] = dofs_state.vel_next[i_d, i_b]
+        rigid_adjoint_cache.dofs_vel[f, i_d, i_b] = dofs_state.vel[i_d, i_b]
 
     for i_q, i_b in ti.ndrange(n_qs, _B):
-        rigid_adjoint_cache.qpos[f, i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
-        rigid_global_info.qpos[i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
+        rigid_adjoint_cache.qpos[f, i_q, i_b] = rigid_global_info.qpos[i_q, i_b]
 
 
 @ti.func

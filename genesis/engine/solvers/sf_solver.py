@@ -287,6 +287,9 @@ class SFSolver(Solver):
     def set_state(self, f, state, envs_idx=None):
         pass
 
+    def init_ckpt(self):
+        pass
+
     def save_ckpt(self, ckpt_name):
         pass
 

@@ -105,6 +105,9 @@ class ToolSolver(Solver):
             for entity in self._entities:
                 entity.collect_output_grads()
 
+    def init_ckpt(self):
+        pass
+
     def save_ckpt(self, ckpt_name):
         for entity in self._entities:
             entity.save_ckpt(ckpt_name)
