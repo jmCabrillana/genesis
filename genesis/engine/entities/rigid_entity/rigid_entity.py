@@ -1666,16 +1666,15 @@ class RigidEntity(Entity):
     @gs.assert_built
     def get_state(self):
         state = RigidEntityState(self, self._sim.cur_step_global)
+
         solver_state = self._solver.get_state()
+        pos = solver_state.links_pos[:, self._base_links_idx].squeeze(-2)
+        quat = solver_state.links_quat[:, self._base_links_idx].squeeze(-2)
 
-        self._kernel_get_base_link_state(
-            f=self._sim.cur_substep_local,
-            pos=state.pos,
-            quat=state.quat,
-        )
-
-        # we store all queried states to track gradient flow
-        self._queried_states.append(state)
+        assert state._pos.shape == pos.shape
+        assert state._quat.shape == quat.shape
+        state._pos = pos
+        state._quat = quat
 
         return state
 

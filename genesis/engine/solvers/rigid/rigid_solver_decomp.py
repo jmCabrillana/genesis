@@ -1398,13 +1398,45 @@ class RigidSolver(Solver):
         pass
 
     def add_grad_from_state(self, state):
-        pass
+        qpos_grad = gs.zeros_like(state.qpos)
+        dofs_vel_grad = gs.zeros_like(state.dofs_vel)
+        links_pos_grad = gs.zeros_like(state.links_pos)
+        links_quat_grad = gs.zeros_like(state.links_quat)
+
+        if state.qpos.grad is not None:
+            qpos_grad = state.qpos.grad
+
+        if state.dofs_vel.grad is not None:
+            dofs_vel_grad = state.dofs_vel.grad
+
+        if state.links_pos.grad is not None:
+            links_pos_grad = state.links_pos.grad
+
+        if state.links_quat.grad is not None:
+            links_quat_grad = state.links_quat.grad
+
+        kernel_get_state_grad(
+            qpos_grad=qpos_grad,
+            vel_grad=dofs_vel_grad,
+            links_pos_grad=links_pos_grad,
+            links_quat_grad=links_quat_grad,
+            links_state=self.links_state,
+            dofs_state=self.dofs_state,
+            geoms_state=self.geoms_state,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
+        )
 
     def collect_output_grads(self):
         """
         Collect gradients from downstream queried states.
         """
-        pass
+        if self._sim.cur_step_global in self._queried_states:
+            # one step could have multiple states
+            assert len(self._queried_states[self._sim.cur_step_global]) == 1
+            state = self._queried_states[self._sim.cur_step_global][0]
+            self.add_grad_from_state(state)
 
     def reset_grad(self):
         pass
@@ -6603,6 +6635,40 @@ def kernel_set_state(
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_l, i_b_ in ti.ndrange(n_geoms, envs_idx.shape[0]):
         geoms_state.friction_ratio[i_l, envs_idx[i_b_]] = friction_ratio[envs_idx[i_b_], i_l]
+
+
+@ti.kernel(pure=gs.use_pure)
+def kernel_get_state_grad(
+    qpos_grad: ti.types.ndarray(),
+    vel_grad: ti.types.ndarray(),
+    links_pos_grad: ti.types.ndarray(),
+    links_quat_grad: ti.types.ndarray(),
+    links_state: array_class.LinksState,
+    dofs_state: array_class.DofsState,
+    geoms_state: array_class.GeomsState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+    static_rigid_sim_cache_key: array_class.StaticRigidSimCacheKey,
+):
+    n_qs = qpos_grad.shape[1]
+    n_dofs = vel_grad.shape[1]
+    n_links = links_pos_grad.shape[1]
+    _B = qpos_grad.shape[0]
+
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_q, i_b in ti.ndrange(n_qs, _B):
+        rigid_global_info.qpos.grad[i_q, i_b] += qpos_grad[i_b, i_q]
+
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_d, i_b in ti.ndrange(n_dofs, _B):
+        dofs_state.vel.grad[i_d, i_b] += vel_grad[i_b, i_d]
+
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_l, i_b in ti.ndrange(n_links, _B):
+        for j in ti.static(range(3)):
+            links_state.pos.grad[i_l, i_b][j] += links_pos_grad[i_b, i_l, j]
+        for j in ti.static(range(4)):
+            links_state.quat.grad[i_l, i_b][j] += links_quat_grad[i_b, i_l, j]
 
 
 @ti.kernel(pure=gs.use_pure)
