@@ -100,18 +100,14 @@ class RigidEntity(Entity):
 
     def init_tgt_keys(self):
 
-        self._tgt_keys = ["pos", "quat"]
+        self._tgt_keys = ["pos", "quat", "qpos", "dofs_velocity"]
 
     def init_tgt_vars(self):
 
         # temp variable to store targets for next step
-        self._tgt = dict()
-        self._tgt_buffer = dict()
+        self._tgt = []
+        self._tgt_buffer = []
         self.init_tgt_keys()
-
-        for key in self._tgt_keys:
-            self._tgt[key] = None
-            self._tgt_buffer[key] = list()
 
     def _load_model(self):
         self._links = gs.List()
@@ -1621,41 +1617,48 @@ class RigidEntity(Entity):
     # ---------------------------------- control & io ------------------------------------
     # ------------------------------------------------------------------------------------
     def process_input(self, in_backward=False):
-        if in_backward:
-            # use negative index because buffer length might not be full
-            index = self._sim.cur_step_local - self._sim._steps_local
-            for key in self._tgt_keys:
-                self._tgt[key] = self._tgt_buffer[key][index]
+        # Apply targets sequentially
+        _tgt = self._tgt.copy()
+        for tgt in _tgt:
+            k = tgt["key"]
+            assert k in self._tgt_keys, f"Invalid target key: {k} not in {self._tgt_keys}"
 
-        else:
-            for key in self._tgt_keys:
-                self._tgt_buffer[key].append(self._tgt[key])
+            # We do not need zero velocity here because set_dofs_velocity will be in [tgt]
+            zero_velocity = False
+            if k == "pos":
+                _pos = tgt["pos"]
+                _envs_idx = tgt["envs_idx"]
+                _relative = tgt["relative"]
+                _unsafe = tgt["unsafe"]
 
-        # set_pos followed by set_vel, because set_pos resets velocity.
-        if self._tgt["pos"] is not None:
-            _pos = self._tgt["pos"]["pos"]
-            _envs_idx = self._tgt["pos"]["envs_idx"]
-            _relative = self._tgt["pos"]["relative"]
-            _zero_velocity = self._tgt["pos"]["zero_velocity"]
-            _unsafe = self._tgt["pos"]["unsafe"]
+                self.set_pos(_pos, envs_idx=_envs_idx, relative=_relative, zero_velocity=zero_velocity, unsafe=_unsafe)
+            elif k == "quat":
+                _quat = tgt["quat"]
+                _envs_idx = tgt["envs_idx"]
+                _relative = tgt["relative"]
+                _unsafe = tgt["unsafe"]
 
-            _pos.assert_contiguous()
-            _pos.assert_sceneless()
-            self.set_pos(_pos, envs_idx=_envs_idx, relative=_relative, zero_velocity=_zero_velocity, unsafe=_unsafe)
+                self.set_quat(
+                    _quat, envs_idx=_envs_idx, relative=_relative, zero_velocity=zero_velocity, unsafe=_unsafe
+                )
+            elif k == "qpos":
+                _qpos = tgt["qpos"]
+                _qs_idx_local = tgt["qs_idx_local"]
+                _envs_idx = tgt["envs_idx"]
+                _unsafe = tgt["unsafe"]
 
-        if self._tgt["quat"] is not None:
-            _quat = self._tgt["quat"]["quat"]
-            _envs_idx = self._tgt["quat"]["envs_idx"]
-            _relative = self._tgt["quat"]["relative"]
-            _zero_velocity = self._tgt["quat"]["zero_velocity"]
-            _unsafe = self._tgt["quat"]["unsafe"]
+                self.set_qpos(
+                    _qpos, qs_idx_local=_qs_idx_local, envs_idx=_envs_idx, zero_velocity=zero_velocity, unsafe=_unsafe
+                )
+            elif k == "dofs_velocity":
+                _velocity = tgt["velocity"]
+                _dofs_idx_local = tgt["dofs_idx_local"]
+                _envs_idx = tgt["envs_idx"]
+                _unsafe = tgt["unsafe"]
 
-            _quat.assert_contiguous()
-            _quat.assert_sceneless()
-            self.set_quat(_quat, envs_idx=_envs_idx, relative=_relative, zero_velocity=_zero_velocity, unsafe=_unsafe)
+                self.set_dofs_velocity(_velocity, dofs_idx_local=_dofs_idx_local, envs_idx=_envs_idx, unsafe=_unsafe)
 
-        for key in self._tgt_keys:
-            self._tgt[key] = None
+        self._tgt = []
 
     def process_input_grad(self):
         pass
@@ -2020,13 +2023,16 @@ class RigidEntity(Entity):
             The indices of the environments. If None, all environments will be considered. Defaults to None.
         """
         # Save in [tgt] for backward pass
-        self._tgt["pos"] = {
-            "pos": to_gs_tensor(pos),
-            "envs_idx": envs_idx,
-            "relative": relative,
-            "zero_velocity": zero_velocity,
-            "unsafe": unsafe,
-        }
+        self._tgt.append(
+            {
+                "key": "pos",
+                "pos": pos,
+                "envs_idx": envs_idx,
+                "relative": relative,
+                "zero_velocity": zero_velocity,
+                "unsafe": unsafe,
+            }
+        )
 
         if not unsafe:
             _pos = torch.as_tensor(pos, dtype=gs.tc_float, device=gs.device).contiguous()
@@ -2063,13 +2069,16 @@ class RigidEntity(Entity):
             The indices of the environments. If None, all environments will be considered. Defaults to None.
         """
         # Save in [tgt] for backward pass
-        self._tgt["quat"] = {
-            "quat": to_gs_tensor(quat),
-            "envs_idx": envs_idx,
-            "relative": relative,
-            "zero_velocity": zero_velocity,
-            "unsafe": unsafe,
-        }
+        self._tgt.append(
+            {
+                "key": "quat",
+                "quat": quat,
+                "envs_idx": envs_idx,
+                "relative": relative,
+                "zero_velocity": zero_velocity,
+                "unsafe": unsafe,
+            }
+        )
         if not unsafe:
             _quat = torch.as_tensor(quat, dtype=gs.tc_float, device=gs.device).contiguous()
             if _quat is not quat:
@@ -2178,6 +2187,18 @@ class RigidEntity(Entity):
         zero_velocity : bool, optional
             Whether to zero the velocity of all the entity's dofs. Defaults to True. This is a safety measure after a sudden change in entity pose.
         """
+        # Save in [tgt] for backward pass
+        self._tgt.append(
+            {
+                "key": "qpos",
+                "qpos": qpos,
+                "qs_idx_local": qs_idx_local,
+                "envs_idx": envs_idx,
+                "zero_velocity": zero_velocity,
+                "unsafe": unsafe,
+            }
+        )
+
         qs_idx = self._get_idx(qs_idx_local, self.n_qs, self._q_start, unsafe=True)
         self._solver.set_qpos(qpos, qs_idx, envs_idx, unsafe=unsafe, skip_forward=zero_velocity)
         if zero_velocity:
@@ -2273,6 +2294,16 @@ class RigidEntity(Entity):
         envs_idx : None | array_like, optional
             The indices of the environments. If None, all environments will be considered. Defaults to None.
         """
+        # Save in [tgt] for backward pass
+        self._tgt.append(
+            {
+                "key": "dofs_velocity",
+                "velocity": velocity,
+                "dofs_idx_local": dofs_idx_local,
+                "envs_idx": envs_idx,
+                "unsafe": unsafe,
+            }
+        )
         dofs_idx = self._get_idx(dofs_idx_local, self.n_dofs, self._dof_start, unsafe=True)
         self._solver.set_dofs_velocity(velocity, dofs_idx, envs_idx, skip_forward=False, unsafe=unsafe)
 
