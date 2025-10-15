@@ -59,11 +59,12 @@ def kernel_update_geoms(
             i_e = (
                 rigid_global_info.awake_entities[i_0, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 0
             )
+            n_geoms = entities_info.geom_end[i_e] - entities_info.geom_start[i_e]
 
             for i_1 in (
                 (
                     # Dynamic inner loop for forward pass
-                    range(entities_info.geom_end[i_e] - entities_info.geom_start[i_e])
+                    range(n_geoms)
                     if ti.static(static_rigid_sim_config.use_hibernation)
                     else range(1)
                 )
@@ -76,7 +77,7 @@ def kernel_update_geoms(
                 )
             ):
                 i_g = i_1 + entities_info.geom_start[i_e] if ti.static(static_rigid_sim_config.use_hibernation) else i_0
-                if i_g < (entities_info.geom_end[i_e] if ti.static(static_rigid_sim_config.use_hibernation) else 1):
+                if i_1 < (n_geoms if ti.static(static_rigid_sim_config.use_hibernation) else 1):
                     if force_update_fixed_geoms or not geoms_info.is_fixed[i_g]:
                         (
                             geoms_state.pos[i_g, i_b],

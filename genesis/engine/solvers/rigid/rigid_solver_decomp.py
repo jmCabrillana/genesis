@@ -5493,73 +5493,52 @@ def func_update_geoms(
     """
     n_geoms = geoms_info.pos.shape[0]
     for i_0 in (
-        range(rigid_global_info.n_awake_entities[i_b])
-        if ti.static(static_rigid_sim_config.use_hibernation)
-        else range(n_geoms)
+        (
+            # Dynamic inner loop for forward pass
+            range(rigid_global_info.n_awake_entities[i_b])
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else range(n_geoms)
+        )
+        if ti.static(not is_backward)
+        else (
+            # Static inner loop for backward pass
+            ti.static(range(static_rigid_sim_config.max_n_awake_entities))
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else ti.static(range(geoms_info.pos.shape[0]))
+        )
     ):
         i_e = rigid_global_info.awake_entities[i_0, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 0
+        n_geoms = entities_info.geom_end[i_e] - entities_info.geom_start[i_e]
 
         for i_1 in (
-            range(entities_info.geom_start[i_e], entities_info.geom_end[i_e])
-            if ti.static(static_rigid_sim_config.use_hibernation)
-            else range(1)
+            (
+                # Dynamic inner loop for forward pass
+                range(n_geoms)
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else range(1)
+            )
+            if ti.static(not is_backward)
+            else (
+                # Static inner loop for backward pass
+                ti.static(range(static_rigid_sim_config.max_n_geoms_per_entity))
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else ti.static(range(1))
+            )
         ):
-            i_g = i_1 if ti.static(static_rigid_sim_config.use_hibernation) else i_0
+            i_g = i_1 + entities_info.geom_start[i_e] if ti.static(static_rigid_sim_config.use_hibernation) else i_0
+            if i_1 < (n_geoms if ti.static(static_rigid_sim_config.use_hibernation) else 1):
+                if force_update_fixed_geoms or not geoms_info.is_fixed[i_g]:
+                    (
+                        geoms_state.pos[i_g, i_b],
+                        geoms_state.quat[i_g, i_b],
+                    ) = gu.ti_transform_pos_quat_by_trans_quat(
+                        geoms_info.pos[i_g],
+                        geoms_info.quat[i_g],
+                        links_state.pos[geoms_info.link_idx[i_g], i_b],
+                        links_state.quat[geoms_info.link_idx[i_g], i_b],
+                    )
 
-            if force_update_fixed_geoms or not geoms_info.is_fixed[i_g]:
-
-                (
-                    geoms_state.pos[i_g, i_b],
-                    geoms_state.quat[i_g, i_b],
-                ) = gu.ti_transform_pos_quat_by_trans_quat(
-                    geoms_info.pos[i_g],
-                    geoms_info.quat[i_g],
-                    links_state.pos[geoms_info.link_idx[i_g], i_b],
-                    links_state.quat[geoms_info.link_idx[i_g], i_b],
-                )
-
-                geoms_state.verts_updated[i_g, i_b] = False
-
-    # n_geoms = geoms_info.pos.shape[0]
-    # for i_0 in (
-    #     # Dynamic inner loop for forward pass
-    #     range(rigid_global_info.n_awake_entities[i_b])
-    #     if ti.static(static_rigid_sim_config.use_hibernation)
-    #     else range(n_geoms)
-    # ) if ti.static(not is_backward) else (
-    #     # Static inner loop for backward pass
-    #     ti.static(range(static_rigid_sim_config.max_n_awake_entities))
-    #     if ti.static(static_rigid_sim_config.use_hibernation)
-    #     else ti.static(range(geoms_info.pos.shape[0]))
-    # ):
-    #     i_e = rigid_global_info.awake_entities[i_0, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 0
-    #     n_geoms = entities_info.geom_end[i_e] - entities_info.geom_start[i_e]
-
-    #     for i_1 in (
-    #         # Dynamic inner loop for forward pass
-    #         range(n_geoms)
-    #         if ti.static(static_rigid_sim_config.use_hibernation)
-    #         else range(1)
-    #     ) if ti.static(not is_backward) else (
-    #         # Static inner loop for backward pass
-    #         ti.static(range(static_rigid_sim_config.max_n_geoms_per_entity))
-    #         if ti.static(static_rigid_sim_config.use_hibernation)
-    #         else ti.static(range(1))
-    #     ):
-    #         i_g = i_1 + entities_info.geom_start[i_e] if ti.static(static_rigid_sim_config.use_hibernation) else i_0
-    #         if i_1 < (n_geoms if ti.static(static_rigid_sim_config.use_hibernation) else 1):
-    #             if force_update_fixed_geoms or not geoms_info.is_fixed[i_g]:
-    #                 (
-    #                     geoms_state.pos[i_g, i_b],
-    #                     geoms_state.quat[i_g, i_b],
-    #                 ) = gu.ti_transform_pos_quat_by_trans_quat(
-    #                     geoms_info.pos[i_g],
-    #                     geoms_info.quat[i_g],
-    #                     links_state.pos[geoms_info.link_idx[i_g], i_b],
-    #                     links_state.quat[geoms_info.link_idx[i_g], i_b],
-    #                 )
-
-    #                 geoms_state.verts_updated[i_g, i_b] = False
+                    geoms_state.verts_updated[i_g, i_b] = False
 
 
 @ti.kernel(pure=gs.use_pure)
