@@ -1507,6 +1507,10 @@ class RigidSolver(Solver):
                 contact_island_state=self.constraint_solver.contact_island.contact_island_state,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
+            kernel_copy_next_to_curr(
+                dofs_state=self.dofs_state,
+                rigid_global_info=self._rigid_global_info,
+            )
             kernel_save_adjoint_cache(
                 f=f + 1,
                 dofs_state=self.dofs_state,
@@ -1533,35 +1537,36 @@ class RigidSolver(Solver):
         pass
 
     def add_grad_from_state(self, state):
-        qpos_grad = gs.zeros_like(state.qpos)
-        dofs_vel_grad = gs.zeros_like(state.dofs_vel)
-        links_pos_grad = gs.zeros_like(state.links_pos)
-        links_quat_grad = gs.zeros_like(state.links_quat)
+        if self.is_active():
+            qpos_grad = gs.zeros_like(state.qpos)
+            dofs_vel_grad = gs.zeros_like(state.dofs_vel)
+            links_pos_grad = gs.zeros_like(state.links_pos)
+            links_quat_grad = gs.zeros_like(state.links_quat)
 
-        if state.qpos.grad is not None:
-            qpos_grad = state.qpos.grad
+            if state.qpos.grad is not None:
+                qpos_grad = state.qpos.grad
 
-        if state.dofs_vel.grad is not None:
-            dofs_vel_grad = state.dofs_vel.grad
+            if state.dofs_vel.grad is not None:
+                dofs_vel_grad = state.dofs_vel.grad
 
-        if state.links_pos.grad is not None:
-            links_pos_grad = state.links_pos.grad
+            if state.links_pos.grad is not None:
+                links_pos_grad = state.links_pos.grad
 
-        if state.links_quat.grad is not None:
-            links_quat_grad = state.links_quat.grad
+            if state.links_quat.grad is not None:
+                links_quat_grad = state.links_quat.grad
 
-        kernel_get_state_grad(
-            qpos_grad=qpos_grad,
-            vel_grad=dofs_vel_grad,
-            links_pos_grad=links_pos_grad,
-            links_quat_grad=links_quat_grad,
-            links_state=self.links_state,
-            dofs_state=self.dofs_state,
-            geoms_state=self.geoms_state,
-            rigid_global_info=self._rigid_global_info,
-            static_rigid_sim_config=self._static_rigid_sim_config,
-            static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
-        )
+            kernel_get_state_grad(
+                qpos_grad=qpos_grad,
+                vel_grad=dofs_vel_grad,
+                links_pos_grad=links_pos_grad,
+                links_quat_grad=links_quat_grad,
+                links_state=self.links_state,
+                dofs_state=self.dofs_state,
+                geoms_state=self.geoms_state,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
+            )
 
     def collect_output_grads(self):
         """
