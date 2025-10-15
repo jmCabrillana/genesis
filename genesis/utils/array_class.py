@@ -1440,9 +1440,12 @@ class StructLinksState:
     pos: V_ANNOTATION
     quat: V_ANNOTATION
     i_pos: V_ANNOTATION
+    i_pos_bw: V_ANNOTATION  # Cache to avoid overwriting for backward pass
     i_quat: V_ANNOTATION
     j_pos: V_ANNOTATION
     j_quat: V_ANNOTATION
+    j_pos_bw: V_ANNOTATION  # Cache to avoid overwriting for backward pass
+    j_quat_bw: V_ANNOTATION
     j_vel: V_ANNOTATION
     j_ang: V_ANNOTATION
     cd_ang: V_ANNOTATION
@@ -1451,6 +1454,7 @@ class StructLinksState:
     cd_vel_bw: V_ANNOTATION
     mass_sum: V_ANNOTATION
     root_COM: V_ANNOTATION  # COM of the kinematic tree
+    root_COM_bw: V_ANNOTATION  # Cache to avoid overwriting for backward pass
     mass_shift: V_ANNOTATION
     i_pos_shift: V_ANNOTATION
     cacc_ang: V_ANNOTATION
@@ -1483,9 +1487,12 @@ def get_links_state(solver):
         "pos": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "quat": V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
         "i_pos": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        "i_pos_bw": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "i_quat": V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
         "j_pos": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "j_quat": V(dtype=gs.ti_vec4, shape=shape, needs_grad=requires_grad),
+        "j_pos_bw": V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
+        "j_quat_bw": V(dtype=gs.ti_vec4, shape=shape_bw, needs_grad=requires_grad),
         "j_vel": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "j_ang": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "cd_ang": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
@@ -1494,6 +1501,7 @@ def get_links_state(solver):
         "cd_vel_bw": V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
         "mass_sum": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         "root_COM": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        "root_COM_bw": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "mass_shift": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         "i_pos_shift": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "cacc_ang": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
