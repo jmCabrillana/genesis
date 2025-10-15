@@ -1447,6 +1447,8 @@ class StructLinksState:
     j_ang: V_ANNOTATION
     cd_ang: V_ANNOTATION
     cd_vel: V_ANNOTATION
+    cd_ang_bw: V_ANNOTATION  # Cache to avoid overwriting for backward pass
+    cd_vel_bw: V_ANNOTATION
     mass_sum: V_ANNOTATION
     root_COM: V_ANNOTATION  # COM of the kinematic tree
     mass_shift: V_ANNOTATION
@@ -1462,7 +1464,10 @@ class StructLinksState:
 
 
 def get_links_state(solver):
+    max_n_joints_per_link = solver._static_rigid_sim_config.max_n_joints_per_link
     shape = solver._batch_shape(solver.n_links_)
+    shape_bw = solver._batch_shape((solver.n_links_, max_n_joints_per_link + 1))
+
     requires_grad = solver._requires_grad
     kwargs = {
         "cinr_inertial": V(dtype=gs.ti_mat3, shape=shape, needs_grad=requires_grad),
@@ -1485,6 +1490,8 @@ def get_links_state(solver):
         "j_ang": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "cd_ang": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "cd_vel": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
+        "cd_ang_bw": V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
+        "cd_vel_bw": V(dtype=gs.ti_vec3, shape=shape_bw, needs_grad=requires_grad),
         "mass_sum": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         "root_COM": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
         "mass_shift": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
