@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from genesis.engine.scene import Scene
     from genesis.engine.simulator import Simulator
 
+import genesis.engine.solvers.rigid._debug_backward_rigid_solver as backward_rigid_solver
 
 # minimum constraint impedance
 IMP_MIN = 0.0001
@@ -210,6 +211,7 @@ class RigidSolver(Solver):
         self._max_n_qs_per_link = self.max_n_qs_per_link
         self._max_n_dofs_per_entity = self.max_n_dofs_per_entity
         self._max_n_dofs_per_link = self.max_n_dofs_per_link
+        self._max_n_geoms_per_entity = self.max_n_geoms_per_entity
 
         self._geoms = self.geoms
         self._vgeoms = self.vgeoms
@@ -301,6 +303,9 @@ class RigidSolver(Solver):
         self._static_rigid_sim_config.max_n_dofs_per_link = (
             getattr(self, "_max_n_dofs_per_link", 0) if self._static_rigid_sim_config.requires_grad else 0
         )
+        self._static_rigid_sim_config.max_n_geoms_per_entity = (
+            getattr(self, "_max_n_geoms_per_entity", 0) if self._static_rigid_sim_config.requires_grad else 0
+        )
         self._static_rigid_sim_config.max_n_awake_links = (
             getattr(self, "_n_links", 0) if self._static_rigid_sim_config.requires_grad else 0
         )
@@ -345,7 +350,9 @@ class RigidSolver(Solver):
             self._init_constraint_solver()
 
             self._init_invweight_and_meaninertia(force_update=False)
-            self._func_update_geoms(self._scene._envs_idx, force_update_fixed_geoms=True)
+            self._func_update_geoms(
+                self._scene._envs_idx, force_update_fixed_geoms=True, is_backward=USE_BACKWARD_LOGIC_IN_FORWARD
+            )
 
     def _init_invweight_and_meaninertia(self, envs_idx=None, *, force_update=True, unsafe=False):
         # Early return if no DoFs. This is essential to avoid segfault on CUDA.
@@ -1170,7 +1177,7 @@ class RigidSolver(Solver):
             static_rigid_sim_config=self._static_rigid_sim_config,
         )
 
-    def _func_update_geoms(self, envs_idx, *, force_update_fixed_geoms=False):
+    def _func_update_geoms(self, envs_idx, *, force_update_fixed_geoms=False, is_backward=False):
         kernel_update_geoms(
             envs_idx,
             entities_info=self.entities_info,
@@ -1181,6 +1188,7 @@ class RigidSolver(Solver):
             static_rigid_sim_config=self._static_rigid_sim_config,
             static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             force_update_fixed_geoms=force_update_fixed_geoms,
+            is_backward=is_backward,
         )
 
     # TODO: we need to use a kernel to clear the constraints if hibernation is enabled
@@ -1360,6 +1368,115 @@ class RigidSolver(Solver):
             self.substep(f)
 
     def substep_pre_coupling_grad(self, f):
+        # Load the current state from adjoint cache
+        curr_qpos = self._rigid_adjoint_cache.qpos.to_numpy()[f]
+        curr_dofs_vel = self._rigid_adjoint_cache.dofs_vel.to_numpy()[f]
+        self._rigid_global_info.qpos.from_numpy(curr_qpos)
+        self.dofs_state.vel.from_numpy(curr_dofs_vel)
+
+        # =================== Forward substep ======================
+        if not self._enable_mujoco_compatibility:
+            kernel_update_cartesian_space(
+                links_state=self.links_state,
+                links_info=self.links_info,
+                joints_state=self.joints_state,
+                joints_info=self.joints_info,
+                dofs_state=self.dofs_state,
+                dofs_info=self.dofs_info,
+                geoms_state=self.geoms_state,
+                geoms_info=self.geoms_info,
+                entities_info=self.entities_info,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+            )
+            # Save results of [update_cartesian_space] to adjoint cache
+            # kernel_save_cartesian_space_to_adjoint_cache(
+            #     f=f,
+            #     dofs_state=self.dofs_state,
+            #     links_state=self.links_state,
+            #     joints_state=self.joints_state,
+            #     geoms_state=self.geoms_state,
+            #     dofs_state_adjoint_cache=self.dofs_state_adjoint_cache,
+            #     links_state_adjoint_cache=self.links_state_adjoint_cache,
+            #     joints_state_adjoint_cache=self.joints_state_adjoint_cache,
+            #     geoms_state_adjoint_cache=self.geoms_state_adjoint_cache,
+            #     static_rigid_sim_config=self._static_rigid_sim_config,
+            # )
+
+        from genesis.engine.couplers import SAPCoupler
+
+        kernel_step_1(
+            links_state=self.links_state,
+            links_info=self.links_info,
+            joints_state=self.joints_state,
+            joints_info=self.joints_info,
+            dofs_state=self.dofs_state,
+            dofs_info=self.dofs_info,
+            geoms_state=self.geoms_state,
+            geoms_info=self.geoms_info,
+            entities_state=self.entities_state,
+            entities_info=self.entities_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            contact_island_state=self.constraint_solver.contact_island.contact_island_state,
+            static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
+        )
+        if isinstance(self.sim.coupler, SAPCoupler):
+            raise ValueError("SAPCoupler is not supported for backward mode.")
+
+        self._func_constraint_force()
+        kernel_step_2(
+            dofs_state=self.dofs_state,
+            dofs_info=self.dofs_info,
+            links_info=self.links_info,
+            links_state=self.links_state,
+            joints_info=self.joints_info,
+            joints_state=self.joints_state,
+            entities_state=self.entities_state,
+            entities_info=self.entities_info,
+            geoms_info=self.geoms_info,
+            geoms_state=self.geoms_state,
+            collider_state=self.collider._collider_state,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            contact_island_state=self.constraint_solver.contact_island.contact_island_state,
+            static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
+        )
+        kernel_copy_next_to_curr(
+            dofs_state=self.dofs_state,
+            rigid_global_info=self._rigid_global_info,
+        )
+        if not self._enable_mujoco_compatibility:
+            kernel_update_cartesian_space(
+                links_state=self.links_state,
+                links_info=self.links_info,
+                joints_state=self.joints_state,
+                joints_info=self.joints_info,
+                dofs_state=self.dofs_state,
+                dofs_info=self.dofs_info,
+                geoms_info=self.geoms_info,
+                geoms_state=self.geoms_state,
+                entities_info=self.entities_info,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+            )
+
+        # =================== Backward substep ======================
+        if not self._enable_mujoco_compatibility:
+
+            backward_rigid_solver.kernel_update_geoms.grad(
+                entities_info=self.entities_info,
+                geoms_info=self.geoms_info,
+                geoms_state=self.geoms_state,
+                links_state=self.links_state,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+                is_backward=True,
+            )
+
         pass
 
     def substep_post_coupling(self, f):
@@ -1575,12 +1692,9 @@ class RigidSolver(Solver):
             self._ckpt[ckpt_name]["dofs_vel"] = self._rigid_adjoint_cache.dofs_vel.to_numpy()
 
     def load_ckpt(self, ckpt_name):
-        self._rigid_adjoint_cache.qpos.from_numpy(self._ckpt[ckpt_name]["qpos"])
-        self._rigid_adjoint_cache.dofs_vel.from_numpy(self._ckpt[ckpt_name]["dofs_vel"])
-
         # Set first frame
-        self._rigid_global_info.qpos.from_numpy(self._ckpt[ckpt_name]["qpos"])
-        self.dofs_state.vel.from_numpy(self._ckpt[ckpt_name]["dofs_vel"])
+        self._rigid_global_info.qpos.from_numpy(self._ckpt[ckpt_name]["qpos"][0])
+        self.dofs_state.vel.from_numpy(self._ckpt[ckpt_name]["dofs_vel"][0])
 
         if not self._enable_mujoco_compatibility:
             kernel_update_cartesian_space(
@@ -2674,6 +2788,12 @@ class RigidSolver(Solver):
         if self.is_built:
             return self._n_geoms
         return len(self.geoms)
+
+    @property
+    def max_n_geoms_per_entity(self):
+        if self.is_built:
+            return self._max_n_geoms_per_entity
+        return max([entity.n_geoms for entity in self._entities]) if len(self._entities) > 0 else 0
 
     @property
     def n_cells(self):
@@ -4544,6 +4664,7 @@ def func_update_cartesian_space(
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
         force_update_fixed_geoms=force_update_fixed_geoms,
+        is_backward=USE_BACKWARD_LOGIC_IN_FORWARD,
     )
 
 
@@ -5332,6 +5453,7 @@ def kernel_update_geoms(
     static_rigid_sim_config: ti.template(),
     static_rigid_sim_cache_key: array_class.StaticRigidSimCacheKey,
     force_update_fixed_geoms: ti.template(),
+    is_backward: ti.template(),
 ):
     for i_b_ in range(envs_idx.shape[0]):
         i_b = envs_idx[i_b_]
@@ -5345,6 +5467,7 @@ def kernel_update_geoms(
             rigid_global_info,
             static_rigid_sim_config,
             force_update_fixed_geoms,
+            is_backward,
         )
 
 
@@ -5358,6 +5481,7 @@ def func_update_geoms(
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
     force_update_fixed_geoms: ti.template(),
+    is_backward: ti.template(),
 ):
     """
     NOTE: this only update geom pose, not its verts and else.
@@ -5390,6 +5514,47 @@ def func_update_geoms(
                 )
 
                 geoms_state.verts_updated[i_g, i_b] = False
+
+    # n_geoms = geoms_info.pos.shape[0]
+    # for i_0 in (
+    #     # Dynamic inner loop for forward pass
+    #     range(rigid_global_info.n_awake_entities[i_b])
+    #     if ti.static(static_rigid_sim_config.use_hibernation)
+    #     else range(n_geoms)
+    # ) if ti.static(not is_backward) else (
+    #     # Static inner loop for backward pass
+    #     ti.static(range(static_rigid_sim_config.max_n_awake_entities))
+    #     if ti.static(static_rigid_sim_config.use_hibernation)
+    #     else ti.static(range(geoms_info.pos.shape[0]))
+    # ):
+    #     i_e = rigid_global_info.awake_entities[i_0, i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 0
+    #     n_geoms = entities_info.geom_end[i_e] - entities_info.geom_start[i_e]
+
+    #     for i_1 in (
+    #         # Dynamic inner loop for forward pass
+    #         range(n_geoms)
+    #         if ti.static(static_rigid_sim_config.use_hibernation)
+    #         else range(1)
+    #     ) if ti.static(not is_backward) else (
+    #         # Static inner loop for backward pass
+    #         ti.static(range(static_rigid_sim_config.max_n_geoms_per_entity))
+    #         if ti.static(static_rigid_sim_config.use_hibernation)
+    #         else ti.static(range(1))
+    #     ):
+    #         i_g = i_1 + entities_info.geom_start[i_e] if ti.static(static_rigid_sim_config.use_hibernation) else i_0
+    #         if i_1 < (n_geoms if ti.static(static_rigid_sim_config.use_hibernation) else 1):
+    #             if force_update_fixed_geoms or not geoms_info.is_fixed[i_g]:
+    #                 (
+    #                     geoms_state.pos[i_g, i_b],
+    #                     geoms_state.quat[i_g, i_b],
+    #                 ) = gu.ti_transform_pos_quat_by_trans_quat(
+    #                     geoms_info.pos[i_g],
+    #                     geoms_info.quat[i_g],
+    #                     links_state.pos[geoms_info.link_idx[i_g], i_b],
+    #                     links_state.quat[geoms_info.link_idx[i_g], i_b],
+    #                 )
+
+    #                 geoms_state.verts_updated[i_g, i_b] = False
 
 
 @ti.kernel(pure=gs.use_pure)
