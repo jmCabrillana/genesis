@@ -1391,18 +1391,16 @@ class RigidSolver(Solver):
                 force_update_fixed_geoms=False,
             )
             # Save results of [update_cartesian_space] to adjoint cache
-            # kernel_save_cartesian_space_to_adjoint_cache(
-            #     f=f,
-            #     dofs_state=self.dofs_state,
-            #     links_state=self.links_state,
-            #     joints_state=self.joints_state,
-            #     geoms_state=self.geoms_state,
-            #     dofs_state_adjoint_cache=self.dofs_state_adjoint_cache,
-            #     links_state_adjoint_cache=self.links_state_adjoint_cache,
-            #     joints_state_adjoint_cache=self.joints_state_adjoint_cache,
-            #     geoms_state_adjoint_cache=self.geoms_state_adjoint_cache,
-            #     static_rigid_sim_config=self._static_rigid_sim_config,
-            # )
+            kernel_copy_cartesian_space(
+                src_dofs_state=self.dofs_state,
+                src_links_state=self.links_state,
+                src_joints_state=self.joints_state,
+                src_geoms_state=self.geoms_state,
+                dst_dofs_state=self.dofs_state_adjoint_cache,
+                dst_links_state=self.links_state_adjoint_cache,
+                dst_joints_state=self.joints_state_adjoint_cache,
+                dst_geoms_state=self.geoms_state_adjoint_cache,
+            )
 
         from genesis.engine.couplers import SAPCoupler
 
@@ -1465,6 +1463,7 @@ class RigidSolver(Solver):
 
         # =================== Backward substep ======================
         if not self._enable_mujoco_compatibility:
+            # [kernel_update_cartesian_space]
 
             backward_rigid_solver.kernel_update_geoms.grad(
                 entities_info=self.entities_info,
@@ -1514,7 +1513,32 @@ class RigidSolver(Solver):
                 is_backward=True,
             )
 
-            pass
+        kernel_copy_next_to_curr.grad(
+            dofs_state=self.dofs_state,
+            rigid_global_info=self._rigid_global_info,
+        )
+
+        # Load the current state from adjoint cache, as it was overwritten by [kernel_copy_next_to_curr]
+        self._rigid_global_info.qpos.from_numpy(curr_qpos)
+        self.dofs_state.vel.from_numpy(curr_dofs_vel)
+
+        if not self._enable_mujoco_compatibility:
+            # Load the previous outputs of [kernel_update_cartesian_space], as it was overwritten if we disabled mujoco
+            # compatibility
+            kernel_copy_cartesian_space(
+                src_dofs_state=self.dofs_state_adjoint_cache,
+                src_links_state=self.links_state_adjoint_cache,
+                src_joints_state=self.joints_state_adjoint_cache,
+                src_geoms_state=self.geoms_state_adjoint_cache,
+                dst_dofs_state=self.dofs_state,
+                dst_links_state=self.links_state,
+                dst_joints_state=self.joints_state,
+                dst_geoms_state=self.geoms_state,
+            )
+
+        # [kernel_step_2]
+
+        pass
 
     def substep_post_coupling(self, f):
         from genesis.engine.couplers import SAPCoupler
@@ -6824,14 +6848,10 @@ def kernel_copy_next_to_curr(
     dofs_state: array_class.DofsState,
     rigid_global_info: array_class.RigidGlobalInfo,
 ):
-    n_dofs = dofs_state.vel.shape[0]
-    n_qs = rigid_global_info.qpos.shape[0]
-    _B = dofs_state.vel.shape[1]
-
-    for i_d, i_b in ti.ndrange(n_dofs, _B):
+    for i_d, i_b in ti.ndrange(dofs_state.vel.shape[0], dofs_state.vel.shape[1]):
         dofs_state.vel[i_d, i_b] = dofs_state.vel_next[i_d, i_b]
 
-    for i_q, i_b in ti.ndrange(n_qs, _B):
+    for i_q, i_b in ti.ndrange(rigid_global_info.qpos.shape[0], rigid_global_info.qpos.shape[1]):
         rigid_global_info.qpos[i_q, i_b] = rigid_global_info.qpos_next[i_q, i_b]
 
 
@@ -6851,6 +6871,64 @@ def kernel_save_adjoint_cache(
 
     for i_q, i_b in ti.ndrange(n_qs, _B):
         rigid_adjoint_cache.qpos[f, i_q, i_b] = rigid_global_info.qpos[i_q, i_b]
+
+
+@ti.kernel(pure=gs.use_pure)
+def kernel_copy_cartesian_space(
+    src_dofs_state: array_class.DofsState,
+    src_links_state: array_class.LinksState,
+    src_joints_state: array_class.JointsState,
+    src_geoms_state: array_class.GeomsState,
+    dst_dofs_state: array_class.DofsStateAdjointCache,
+    dst_links_state: array_class.LinksStateAdjointCache,
+    dst_joints_state: array_class.JointsStateAdjointCache,
+    dst_geoms_state: array_class.GeomsStateAdjointCache,
+):
+    # Copy outputs of [kernel_update_cartesian_space] among [dofs, links, joints, geoms] states. This is used to restore
+    # the outputs that were overwritten if we disabled mujoco compatibility for backward pass.
+
+    # dofs state
+    for i_d, i_b in ti.ndrange(src_dofs_state.pos.shape[0], src_dofs_state.pos.shape[1]):
+        # pos, cdof_ang, cdof_vel, cdofvel_ang, cdofvel_vel, cdofd_ang, cdofd_vel
+        dst_dofs_state.pos[i_d, i_b] = src_dofs_state.pos[i_d, i_b]
+        dst_dofs_state.cdof_ang[i_d, i_b] = src_dofs_state.cdof_ang[i_d, i_b]
+        dst_dofs_state.cdof_vel[i_d, i_b] = src_dofs_state.cdof_vel[i_d, i_b]
+        dst_dofs_state.cdofvel_ang[i_d, i_b] = src_dofs_state.cdofvel_ang[i_d, i_b]
+        dst_dofs_state.cdofvel_vel[i_d, i_b] = src_dofs_state.cdofvel_vel[i_d, i_b]
+        dst_dofs_state.cdofd_ang[i_d, i_b] = src_dofs_state.cdofd_ang[i_d, i_b]
+        dst_dofs_state.cdofd_vel[i_d, i_b] = src_dofs_state.cdofd_vel[i_d, i_b]
+
+    # links state
+    for i_l, i_b in ti.ndrange(src_links_state.pos.shape[0], src_links_state.pos.shape[1]):
+        # pos, quat, root_COM, mass_sum, i_pos, i_quat, cinr_inertial, cinr_pos, cinr_quat, cinr_mass, j_pos, j_quat,
+        # cd_vel, cd_ang
+        dst_links_state.pos[i_l, i_b] = src_links_state.pos[i_l, i_b]
+        dst_links_state.quat[i_l, i_b] = src_links_state.quat[i_l, i_b]
+        dst_links_state.root_COM[i_l, i_b] = src_links_state.root_COM[i_l, i_b]
+        dst_links_state.mass_sum[i_l, i_b] = src_links_state.mass_sum[i_l, i_b]
+        dst_links_state.i_pos[i_l, i_b] = src_links_state.i_pos[i_l, i_b]
+        dst_links_state.i_quat[i_l, i_b] = src_links_state.i_quat[i_l, i_b]
+        dst_links_state.cinr_inertial[i_l, i_b] = src_links_state.cinr_inertial[i_l, i_b]
+        dst_links_state.cinr_pos[i_l, i_b] = src_links_state.cinr_pos[i_l, i_b]
+        dst_links_state.cinr_quat[i_l, i_b] = src_links_state.cinr_quat[i_l, i_b]
+        dst_links_state.cinr_mass[i_l, i_b] = src_links_state.cinr_mass[i_l, i_b]
+        dst_links_state.j_pos[i_l, i_b] = src_links_state.j_pos[i_l, i_b]
+        dst_links_state.j_quat[i_l, i_b] = src_links_state.j_quat[i_l, i_b]
+        dst_links_state.cd_vel[i_l, i_b] = src_links_state.cd_vel[i_l, i_b]
+        dst_links_state.cd_ang[i_l, i_b] = src_links_state.cd_ang[i_l, i_b]
+
+    # joints state
+    for i_j, i_b in ti.ndrange(src_joints_state.xanchor.shape[0], src_joints_state.xanchor.shape[1]):
+        # xanchor, xaxis
+        dst_joints_state.xanchor[i_j, i_b] = src_joints_state.xanchor[i_j, i_b]
+        dst_joints_state.xaxis[i_j, i_b] = src_joints_state.xaxis[i_j, i_b]
+
+    # geoms state
+    for i_g, i_b in ti.ndrange(src_geoms_state.pos.shape[0], src_geoms_state.pos.shape[1]):
+        # pos, quat, verts_updated
+        dst_geoms_state.pos[i_g, i_b] = src_geoms_state.pos[i_g, i_b]
+        dst_geoms_state.quat[i_g, i_b] = src_geoms_state.quat[i_g, i_b]
+        dst_geoms_state.verts_updated[i_g, i_b] = src_geoms_state.verts_updated[i_g, i_b]
 
 
 @ti.func
