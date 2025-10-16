@@ -671,3 +671,238 @@ def func_COM_links(
                                 dofs_state.cdofvel_vel[i_d, i_b] = (
                                     dofs_state.cdof_vel[i_d, i_b] * dofs_state.vel[i_d, i_b]
                                 )
+
+
+@ti.kernel
+def kernel_forward_kinematics(
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
+):
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_b in range(links_state.pos.shape[1]):
+        func_forward_kinematics(
+            i_b=i_b,
+            links_state=links_state,
+            links_info=links_info,
+            joints_state=joints_state,
+            joints_info=joints_info,
+            dofs_state=dofs_state,
+            dofs_info=dofs_info,
+            entities_info=entities_info,
+            rigid_global_info=rigid_global_info,
+            static_rigid_sim_config=static_rigid_sim_config,
+            is_backward=is_backward,
+        )
+
+
+@ti.func
+def func_forward_kinematics(
+    i_b,
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
+):
+    for i_e_ in (
+        (
+            range(rigid_global_info.n_awake_entities[i_b])
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else range(entities_info.n_links.shape[0])
+        )
+        if ti.static(not is_backward)
+        else (
+            ti.static(range(static_rigid_sim_config.max_n_awake_entities))
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else ti.static(range(entities_info.n_links.shape[0]))
+        )
+    ):
+        if i_e_ < (
+            rigid_global_info.n_awake_entities[i_b]
+            if ti.static(static_rigid_sim_config.use_hibernation)
+            else entities_info.n_links.shape[0]
+        ):
+            i_e = (
+                rigid_global_info.awake_entities[i_e_, i_b]
+                if ti.static(static_rigid_sim_config.use_hibernation)
+                else i_e_
+            )
+
+            func_forward_kinematics_entity(
+                i_e,
+                i_b,
+                links_state,
+                links_info,
+                joints_state,
+                joints_info,
+                dofs_state,
+                dofs_info,
+                entities_info,
+                rigid_global_info,
+                static_rigid_sim_config,
+                is_backward,
+            )
+
+
+@ti.func
+def func_forward_kinematics_entity(
+    i_e,
+    i_b,
+    links_state: array_class.LinksState,
+    links_info: array_class.LinksInfo,
+    joints_state: array_class.JointsState,
+    joints_info: array_class.JointsInfo,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    entities_info: array_class.EntitiesInfo,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+    is_backward: ti.template(),
+):
+    # Becomes static loop in backward pass, because we assume this loop is an inner loop
+    for i_l_ in (
+        range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+        if ti.static(not is_backward)
+        else ti.static(range(static_rigid_sim_config.max_n_links_per_entity))
+    ):
+        i_l = i_l_ if ti.static(not is_backward) else (i_l_ + entities_info.link_start[i_e])
+
+        if i_l < entities_info.link_end[i_e]:
+            I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
+
+            links_state.pos_bw[i_l, 0, i_b] = links_info.pos[I_l]
+            links_state.quat_bw[i_l, 0, i_b] = links_info.quat[I_l]
+            if links_info.parent_idx[I_l] != -1:
+                parent_pos = links_state.pos[links_info.parent_idx[I_l], i_b]
+                parent_quat = links_state.quat[links_info.parent_idx[I_l], i_b]
+                links_state.pos_bw[i_l, 0, i_b] = parent_pos + gu.ti_transform_by_quat(links_info.pos[I_l], parent_quat)
+                links_state.quat_bw[i_l, 0, i_b] = gu.ti_transform_quat_by_quat(links_info.quat[I_l], parent_quat)
+
+            n_joints = links_info.joint_end[I_l] - links_info.joint_start[I_l]
+
+            for i_j_ in (
+                range(n_joints)
+                if ti.static(not is_backward)
+                else ti.static(range(static_rigid_sim_config.max_n_joints_per_link))
+            ):
+                i_j = i_j_ + links_info.joint_start[I_l]
+
+                curr_i_j = 0 if ti.static(not is_backward) else i_j_
+                next_i_j = 0 if ti.static(not is_backward) else i_j_ + 1
+
+                if i_j < links_info.joint_end[I_l]:
+                    I_j = [i_j, i_b] if ti.static(static_rigid_sim_config.batch_joints_info) else i_j
+                    joint_type = joints_info.type[I_j]
+                    q_start = joints_info.q_start[I_j]
+                    dof_start = joints_info.dof_start[I_j]
+                    I_d = [dof_start, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else dof_start
+
+                    # compute axis and anchor
+                    if joint_type == gs.JOINT_TYPE.FREE:
+                        joints_state.xanchor[i_j, i_b] = ti.Vector(
+                            [
+                                rigid_global_info.qpos[q_start, i_b],
+                                rigid_global_info.qpos[q_start + 1, i_b],
+                                rigid_global_info.qpos[q_start + 2, i_b],
+                            ]
+                        )
+                        joints_state.xaxis[i_j, i_b] = ti.Vector([0.0, 0.0, 1.0])
+                    elif joint_type == gs.JOINT_TYPE.FIXED:
+                        pass
+                    else:
+                        axis = ti.Vector([0.0, 0.0, 1.0], dt=gs.ti_float)
+                        if joint_type == gs.JOINT_TYPE.REVOLUTE:
+                            axis = dofs_info.motion_ang[I_d]
+                        elif joint_type == gs.JOINT_TYPE.PRISMATIC:
+                            axis = dofs_info.motion_vel[I_d]
+
+                        joints_state.xanchor[i_j, i_b] = (
+                            gu.ti_transform_by_quat(joints_info.pos[I_j], links_state.quat_bw[i_l, curr_i_j, i_b])
+                            + links_state.pos_bw[i_l, curr_i_j, i_b]
+                        )
+                        joints_state.xaxis[i_j, i_b] = gu.ti_transform_by_quat(
+                            axis, links_state.quat_bw[i_l, curr_i_j, i_b]
+                        )
+
+                    if joint_type == gs.JOINT_TYPE.FREE:
+                        links_state.pos_bw[i_l, next_i_j, i_b] = ti.Vector(
+                            [
+                                rigid_global_info.qpos[q_start, i_b],
+                                rigid_global_info.qpos[q_start + 1, i_b],
+                                rigid_global_info.qpos[q_start + 2, i_b],
+                            ],
+                            dt=gs.ti_float,
+                        )
+                        links_state.quat_bw[i_l, next_i_j, i_b] = ti.Vector(
+                            [
+                                rigid_global_info.qpos[q_start + 3, i_b],
+                                rigid_global_info.qpos[q_start + 4, i_b],
+                                rigid_global_info.qpos[q_start + 5, i_b],
+                                rigid_global_info.qpos[q_start + 6, i_b],
+                            ],
+                            dt=gs.ti_float,
+                        )
+                        xyz = gu.ti_quat_to_xyz(links_state.quat_bw[i_l, next_i_j, i_b])
+                        for j in ti.static(range(3)):
+                            dofs_state.pos[dof_start + j, i_b] = links_state.pos_bw[i_l, next_i_j, i_b][j]
+                            dofs_state.pos[dof_start + 3 + j, i_b] = xyz[j]
+                    elif joint_type == gs.JOINT_TYPE.FIXED:
+                        pass
+                    elif joint_type == gs.JOINT_TYPE.SPHERICAL:
+                        qloc = ti.Vector(
+                            [
+                                rigid_global_info.qpos[q_start, i_b],
+                                rigid_global_info.qpos[q_start + 1, i_b],
+                                rigid_global_info.qpos[q_start + 2, i_b],
+                                rigid_global_info.qpos[q_start + 3, i_b],
+                            ],
+                            dt=gs.ti_float,
+                        )
+                        xyz = gu.ti_quat_to_xyz(qloc)
+                        for j in ti.static(range(3)):
+                            dofs_state.pos[dof_start + j, i_b] = xyz[j]
+                        links_state.quat_bw[i_l, next_i_j, i_b] = gu.ti_transform_quat_by_quat(
+                            qloc, links_state.quat_bw[i_l, curr_i_j, i_b]
+                        )
+                        links_state.pos_bw[i_l, next_i_j, i_b] = joints_state.xanchor[
+                            i_j, i_b
+                        ] - gu.ti_transform_by_quat(joints_info.pos[I_j], links_state.quat_bw[i_l, next_i_j, i_b])
+                    elif joint_type == gs.JOINT_TYPE.REVOLUTE:
+                        axis = dofs_info.motion_ang[I_d]
+                        dofs_state.pos[dof_start, i_b] = (
+                            rigid_global_info.qpos[q_start, i_b] - rigid_global_info.qpos0[q_start, i_b]
+                        )
+                        qloc = gu.ti_rotvec_to_quat(axis * dofs_state.pos[dof_start, i_b])
+                        links_state.quat_bw[i_l, next_i_j, i_b] = gu.ti_transform_quat_by_quat(
+                            qloc, links_state.quat_bw[i_l, curr_i_j, i_b]
+                        )
+                        links_state.pos_bw[i_l, next_i_j, i_b] = joints_state.xanchor[
+                            i_j, i_b
+                        ] - gu.ti_transform_by_quat(joints_info.pos[I_j], links_state.quat_bw[i_l, next_i_j, i_b])
+                    else:  # joint_type == gs.JOINT_TYPE.PRISMATIC:
+                        dofs_state.pos[dof_start, i_b] = (
+                            rigid_global_info.qpos[q_start, i_b] - rigid_global_info.qpos0[q_start, i_b]
+                        )
+                        links_state.pos_bw[i_l, next_i_j, i_b] = (
+                            links_state.pos_bw[i_l, curr_i_j, i_b]
+                            + joints_state.xaxis[i_j, i_b] * dofs_state.pos[dof_start, i_b]
+                        )
+
+            # Skip link pose update for fixed root links to let users manually overwrite them
+            i_j_ = 0 if ti.static(not is_backward) else n_joints
+            if not (links_info.parent_idx[I_l] == -1 and links_info.is_fixed[I_l]):
+                links_state.pos[i_l, i_b] = links_state.pos_bw[i_l, i_j_, i_b]
+                links_state.quat[i_l, i_b] = links_state.quat_bw[i_l, i_j_, i_b]
