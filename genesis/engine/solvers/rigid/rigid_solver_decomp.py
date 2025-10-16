@@ -6879,10 +6879,10 @@ def kernel_copy_cartesian_space(
     src_links_state: array_class.LinksState,
     src_joints_state: array_class.JointsState,
     src_geoms_state: array_class.GeomsState,
-    dst_dofs_state: array_class.DofsStateAdjointCache,
-    dst_links_state: array_class.LinksStateAdjointCache,
-    dst_joints_state: array_class.JointsStateAdjointCache,
-    dst_geoms_state: array_class.GeomsStateAdjointCache,
+    dst_dofs_state: array_class.DofsState,
+    dst_links_state: array_class.LinksState,
+    dst_joints_state: array_class.JointsState,
+    dst_geoms_state: array_class.GeomsState,
 ):
     # Copy outputs of [kernel_update_cartesian_space] among [dofs, links, joints, geoms] states. This is used to restore
     # the outputs that were overwritten if we disabled mujoco compatibility for backward pass.
