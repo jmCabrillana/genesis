@@ -1542,6 +1542,7 @@ class RigidSolver(Solver):
             )
 
         # [kernel_step_2]
+        #   [func_integrate]
         backward_rigid_solver.kernel_integrate.grad(
             dofs_state=self.dofs_state,
             links_info=self.links_info,
@@ -1550,6 +1551,32 @@ class RigidSolver(Solver):
             static_rigid_sim_config=self._static_rigid_sim_config,
             is_backward=True,
         )
+
+        #   [func_implicit_damping]
+        if self._static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast:
+            # if (
+            #     not self._static_rigid_sim_config.enable_mujoco_compatibility
+            #     or self._static_rigid_sim_config.integrator == gs.integrator.Euler
+            # ):
+            #     # Compute mass mask again, because it would have been reset to all 1
+            #     backward_rigid_solver.kernel_compute_mass_mask(
+            #         dofs_state=self.dofs_state,
+            #         dofs_info=self.dofs_info,
+            #         entities_info=self.entities_info,
+            #         rigid_global_info=self._rigid_global_info,
+            #         static_rigid_sim_config=self._static_rigid_sim_config,
+            #         is_backward=True,
+            #     )
+
+            backward_rigid_solver.kernel_solve_mass.grad(
+                vec=self.dofs_state.force,
+                out=self.dofs_state.acc,
+                out_bw=self.dofs_state.acc_bw,
+                entities_info=self.entities_info,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                is_backward=True,
+            )
 
         pass
 
@@ -4122,6 +4149,7 @@ def func_factor_mass(
 def func_solve_mass_batched(
     vec: array_class.V_ANNOTATION,
     out: array_class.V_ANNOTATION,
+    out_bw: array_class.V_ANNOTATION,  # Should not be None if backward
     i_b: ti.int32,
     entities_info: array_class.EntitiesInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
@@ -4171,7 +4199,11 @@ def func_solve_mass_batched(
                 ):
                     if i_d_ < n_dofs:
                         i_d = entity_dof_end - i_d_ - 1
-                        out[i_d, i_b] = vec[i_d, i_b]
+                        if ti.static(is_backward):
+                            out_bw[0, i_d, i_b] = vec[i_d, i_b]
+                        else:
+                            out[i_d, i_b] = vec[i_d, i_b]
+
                         for j_d_ in (
                             range(i_d + 1, entity_dof_end)
                             if ti.static(not is_backward)
@@ -4179,7 +4211,14 @@ def func_solve_mass_batched(
                         ):
                             j_d = j_d_ if ti.static(not is_backward) else (j_d_ + entities_info.dof_start[i_e])
                             if j_d >= i_d + 1 and j_d < entity_dof_end:
-                                out[i_d, i_b] -= rigid_global_info.mass_mat_L[j_d, i_d, i_b] * out[j_d, i_b]
+                                # Since we read out[j_d, i_b], and j_d > i_d, which means that out[j_d, i_b] is already
+                                # finalized at this point, we don't need to care about AD mutation rule.
+                                if ti.static(is_backward):
+                                    out_bw[0, i_d, i_b] += -(
+                                        rigid_global_info.mass_mat_L[j_d, i_d, i_b] * out_bw[0, j_d, i_b]
+                                    )
+                                else:
+                                    out[i_d, i_b] += -(rigid_global_info.mass_mat_L[j_d, i_d, i_b] * out[j_d, i_b])
 
                 # Step 2: z = D^{-1} w
                 for i_d_ in (
@@ -4189,7 +4228,10 @@ def func_solve_mass_batched(
                 ):
                     i_d = i_d_ if ti.static(not is_backward) else (i_d_ + entities_info.dof_start[i_e])
                     if i_d < entity_dof_end:
-                        out[i_d, i_b] *= rigid_global_info.mass_mat_D_inv[i_d, i_b]
+                        if ti.static(is_backward):
+                            out_bw[1, i_d, i_b] = out_bw[0, i_d, i_b] * rigid_global_info.mass_mat_D_inv[i_d, i_b]
+                        else:
+                            out[i_d, i_b] *= rigid_global_info.mass_mat_D_inv[i_d, i_b]
 
                 # Step 3: Solve x st. L @ x = z
                 for i_d_ in (
@@ -4199,6 +4241,10 @@ def func_solve_mass_batched(
                 ):
                     i_d = i_d_ if ti.static(not is_backward) else (i_d_ + entities_info.dof_start[i_e])
                     if i_d < entity_dof_end:
+                        curr_out = out[i_d, i_b]
+                        if ti.static(is_backward):
+                            curr_out = out_bw[1, i_d, i_b]
+
                         for j_d_ in (
                             range(entity_dof_start, i_d)
                             if ti.static(not is_backward)
@@ -4206,25 +4252,28 @@ def func_solve_mass_batched(
                         ):
                             j_d = j_d_ if ti.static(not is_backward) else (j_d_ + entities_info.dof_start[i_e])
                             if j_d < i_d:
-                                out[i_d, i_b] -= rigid_global_info.mass_mat_L[i_d, j_d, i_b] * out[j_d, i_b]
+                                curr_out += -(rigid_global_info.mass_mat_L[i_d, j_d, i_b] * out[j_d, i_b])
+
+                        out[i_d, i_b] = curr_out
 
 
 @ti.func
 def func_solve_mass(
     vec: array_class.V_ANNOTATION,
     out: array_class.V_ANNOTATION,
+    out_bw: array_class.V_ANNOTATION,  # Should not be None if backward
     entities_info: array_class.EntitiesInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
     # This loop must be the outermost loop to be differentiable
-    _B = out.shape[1]
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-    for i_b in range(_B):
+    for i_b in range(out.shape[1]):
         func_solve_mass_batched(
             vec,
             out,
+            out_bw,
             i_b,
             entities_info=entities_info,
             rigid_global_info=rigid_global_info,
@@ -4855,6 +4904,7 @@ def func_implicit_damping(
     func_solve_mass(
         vec=dofs_state.force,
         out=dofs_state.acc,
+        out_bw=dofs_state.acc_bw,
         entities_info=entities_info,
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,
@@ -6683,6 +6733,7 @@ def func_compute_qacc(
     func_solve_mass(
         vec=dofs_state.force,
         out=dofs_state.acc_smooth,
+        out_bw=dofs_state.acc_smooth_bw,
         entities_info=entities_info,
         rigid_global_info=rigid_global_info,
         static_rigid_sim_config=static_rigid_sim_config,

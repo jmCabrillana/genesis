@@ -1347,6 +1347,7 @@ def get_dofs_info(solver):
 
 @dataclasses.dataclass
 class StructDofsState:
+    # *_bw: Cache to avoid overwriting for backward pass
     force: V_ANNOTATION
     qf_bias: V_ANNOTATION
     qf_passive: V_ANNOTATION
@@ -1358,7 +1359,9 @@ class StructDofsState:
     vel_prev: V_ANNOTATION
     vel_next: V_ANNOTATION
     acc: V_ANNOTATION
+    acc_bw: V_ANNOTATION
     acc_smooth: V_ANNOTATION
+    acc_smooth_bw: V_ANNOTATION
     qf_smooth: V_ANNOTATION
     qf_constraint: V_ANNOTATION
     cdof_ang: V_ANNOTATION
@@ -1391,7 +1394,9 @@ def get_dofs_state(solver):
         "vel_prev": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         "vel_next": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         "acc": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        "acc_bw": V(dtype=gs.ti_float, shape=solver._batch_shape((2, solver.n_dofs_)), needs_grad=requires_grad),
         "acc_smooth": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
+        "acc_smooth_bw": V(dtype=gs.ti_float, shape=solver._batch_shape((2, solver.n_dofs_)), needs_grad=requires_grad),
         "qf_smooth": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         "qf_constraint": V(dtype=gs.ti_float, shape=shape, needs_grad=requires_grad),
         "cdof_ang": V(dtype=gs.ti_vec3, shape=shape, needs_grad=requires_grad),
