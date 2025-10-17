@@ -1385,8 +1385,10 @@ class RigidSolver(Solver):
         # Load the current state from adjoint cache
         curr_qpos = self._rigid_adjoint_cache.qpos.to_numpy()[f]
         curr_dofs_vel = self._rigid_adjoint_cache.dofs_vel.to_numpy()[f]
+        curr_dofs_acc = self._rigid_adjoint_cache.dofs_acc.to_numpy()[f]
         self._rigid_global_info.qpos.from_numpy(curr_qpos)
         self.dofs_state.vel.from_numpy(curr_dofs_vel)
+        self.dofs_state.acc.from_numpy(curr_dofs_acc)
 
         # =================== Forward substep ======================
         if not self._enable_mujoco_compatibility:
@@ -1584,6 +1586,9 @@ class RigidSolver(Solver):
             is_backward=True,
         )
 
+        # Load the current dofs_acc from adjoint cache, as it was overwritten by [kernel_compute_qacc]
+        self.dofs_state.acc.from_numpy(curr_dofs_acc)
+
         #     [func_bias_force]
         backward_rigid_solver.kernel_bias_force.grad(
             dofs_state=self.dofs_state,
@@ -1599,6 +1604,45 @@ class RigidSolver(Solver):
             links_state=self.links_state,
             links_info=self.links_info,
             entities_info=self.entities_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            is_backward=True,
+        )
+
+        #     [func_update_acc]
+        backward_rigid_solver.kernel_update_acc.grad(
+            update_cacc=False,
+            dofs_state=self.dofs_state,
+            links_info=self.links_info,
+            links_state=self.links_state,
+            entities_info=self.entities_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            is_backward=True,
+        )
+
+        #     [func_torque_and_passive_force]
+        backward_rigid_solver.kernel_torque_and_passive_force.grad(
+            entities_state=self.entities_state,
+            entities_info=self.entities_info,
+            dofs_state=self.dofs_state,
+            dofs_info=self.dofs_info,
+            links_state=self.links_state,
+            links_info=self.links_info,
+            joints_info=self.joints_info,
+            geoms_state=self.geoms_state,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            contact_island_state=self.constraint_solver.contact_island.contact_island_state,
+            is_backward=True,
+        )
+
+        #     [func_factor_mass]
+        backward_rigid_solver.kernel_factor_mass.grad(
+            implicit_damping=(self._static_rigid_sim_config.integrator == gs.integrator.approximate_implicitfast),
+            entities_info=self.entities_info,
+            dofs_state=self.dofs_state,
+            dofs_info=self.dofs_info,
             rigid_global_info=self._rigid_global_info,
             static_rigid_sim_config=self._static_rigid_sim_config,
             is_backward=True,
@@ -4172,9 +4216,10 @@ def func_factor_mass(
                                 rigid_global_info.mass_mat_L[i_d, i_d, i_b] = 1.0
 
     else:
-        # This block is logically equivalent to the above block, but the access pattern has been adjusted to be safe
-        # for AD. However, it shows slightly numerical difference in the result, and thus it fails for a unit test
-        # ("test_urdf_rope"), while passing all the others. TODO: Investigate if we can fix this and only use this block.
+        # Cholesky decomposition that has safe access pattern and robust handling of divide by zero for AD. Even though
+        # it is logically equivalent to the above block, it shows slightly numerical difference in the result, and thus
+        # it fails for a unit test ("test_urdf_rope"), while passing all the others. TODO: Investigate if we can fix this
+        # and only use this block.
 
         # Assume this is the outermost loop
         ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
@@ -4251,14 +4296,14 @@ def func_factor_mass(
                                         * rigid_global_info.mass_mat_L_bw[1, j_pr, k_pr, i_b]
                                     )
 
+                            a = rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
+                            b = ti.math.clamp(rigid_global_info.mass_mat_L_bw[1, j_pr, j_pr, i_b], gs.EPS, ti.math.inf)
                             if p_i0 == p_j0:
                                 rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = ti.sqrt(
-                                    rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
+                                    ti.math.clamp(a, gs.EPS, ti.math.inf)
                                 )
                             else:
-                                rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = (
-                                    rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
-                                ) / rigid_global_info.mass_mat_L_bw[1, j_pr, j_pr, i_b]
+                                rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = a / b
 
                 for i_d0 in (
                     range(n_dofs)
@@ -4276,14 +4321,14 @@ def func_factor_mass(
                             i_pr = (entity_dof_start + entity_dof_end - 1) - i_d
                             j_pr = (entity_dof_start + entity_dof_end - 1) - j_d
 
-                            rigid_global_info.mass_mat_L[i_d, j_d, i_b] = (
-                                rigid_global_info.mass_mat_L_bw[1, j_pr, i_pr, i_b]
-                                / rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b]
-                            )
+                            a = rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b]
+                            rigid_global_info.mass_mat_L[i_d, j_d, i_b] = rigid_global_info.mass_mat_L_bw[
+                                1, j_pr, i_pr, i_b
+                            ] / ti.math.clamp(a, gs.EPS, ti.math.inf)
 
                             if i_d == j_d:
                                 rigid_global_info.mass_mat_D_inv[i_d, i_b] = 1.0 / (
-                                    rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b] ** 2
+                                    ti.math.clamp(a**2, gs.EPS, ti.math.inf)
                                 )
 
 
@@ -6382,14 +6427,9 @@ def func_torque_and_passive_force(
     contact_island_state: array_class.ContactIslandState,
     is_backward: ti.template(),
 ):
-    n_entities = entities_info.n_links.shape[0]
-    _B = dofs_state.ctrl_mode.shape[1]
-    n_dofs = dofs_state.ctrl_mode.shape[0]
-    n_links = links_info.root_idx.shape[0]
-
     # compute force based on each dof's ctrl mode
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-    for i_e, i_b in ti.ndrange(n_entities, _B):
+    for i_e, i_b in ti.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1]):
         wakeup = False
 
         for i_l_ in (
@@ -6494,7 +6534,11 @@ def func_torque_and_passive_force(
             )
 
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
-    for i_0, i_b in ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_dofs, _B):
+    for i_0, i_b in (
+        ti.ndrange(1, dofs_state.ctrl_mode.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(dofs_state.ctrl_mode.shape[0], dofs_state.ctrl_mode.shape[1])
+    ):
         for i_1 in (
             (
                 # Dynamic inner for forward pass
@@ -6522,7 +6566,9 @@ def func_torque_and_passive_force(
 
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_links, _B)
+        ti.ndrange(1, dofs_state.ctrl_mode.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(links_info.root_idx.shape[0], dofs_state.ctrl_mode.shape[1])
     ):
         for i_1 in (
             (
@@ -7074,6 +7120,7 @@ def kernel_save_adjoint_cache(
 
     for i_d, i_b in ti.ndrange(n_dofs, _B):
         rigid_adjoint_cache.dofs_vel[f, i_d, i_b] = dofs_state.vel[i_d, i_b]
+        rigid_adjoint_cache.dofs_acc[f, i_d, i_b] = dofs_state.acc[i_d, i_b]
 
     for i_q, i_b in ti.ndrange(n_qs, _B):
         rigid_adjoint_cache.qpos[f, i_q, i_b] = rigid_global_info.qpos[i_q, i_b]

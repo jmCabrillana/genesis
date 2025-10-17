@@ -2172,6 +2172,7 @@ def get_entities_state(solver):
 class StructRigidAdjointCache:
     qpos: V_ANNOTATION
     dofs_vel: V_ANNOTATION
+    dofs_acc: V_ANNOTATION
 
 
 def get_rigid_adjoint_cache(solver):
@@ -2181,6 +2182,7 @@ def get_rigid_adjoint_cache(solver):
     kwargs = {
         "qpos": V(dtype=gs.ti_float, shape=f_batch((n_frames, solver.n_qs_))),
         "dofs_vel": V(dtype=gs.ti_float, shape=f_batch((n_frames, solver.n_dofs_))),
+        "dofs_acc": V(dtype=gs.ti_float, shape=f_batch((n_frames, solver.n_dofs_))),
     }
 
     if use_ndarray:
