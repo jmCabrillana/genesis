@@ -1639,10 +1639,23 @@ class RigidSolver(Solver):
 
         #     [func_factor_mass]
         backward_rigid_solver.kernel_factor_mass.grad(
-            implicit_damping=(self._static_rigid_sim_config.integrator == gs.integrator.approximate_implicitfast),
+            implicit_damping=False,
             entities_info=self.entities_info,
             dofs_state=self.dofs_state,
             dofs_info=self.dofs_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            is_backward=True,
+        )
+
+        #     [func_compute_mass_matrix]
+        backward_rigid_solver.kernel_compute_mass_matrix.grad(
+            implicit_damping=(self._static_rigid_sim_config.integrator == gs.integrator.approximate_implicitfast),
+            links_state=self.links_state,
+            links_info=self.links_info,
+            dofs_state=self.dofs_state,
+            dofs_info=self.dofs_info,
+            entities_info=self.entities_info,
             rigid_global_info=self._rigid_global_info,
             static_rigid_sim_config=self._static_rigid_sim_config,
             is_backward=True,
@@ -3832,15 +3845,12 @@ def func_compute_mass_matrix(
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
-    _B = links_state.pos.shape[1]
-    n_links = links_state.pos.shape[0]
-    n_entities = entities_info.n_links.shape[0]
-    n_dofs = dofs_state.f_ang.shape[0]
-
     # crb initialize
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_links, _B)
+        ti.ndrange(1, links_state.pos.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(links_state.pos.shape[0], links_state.pos.shape[1])
     ):
         for i_1 in (
             (
@@ -3874,7 +3884,9 @@ def func_compute_mass_matrix(
     # crb
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_entities, _B)
+        ti.ndrange(1, links_state.pos.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1])
     ):
         for i_1 in (
             (
@@ -3911,24 +3923,17 @@ def func_compute_mass_matrix(
                         i_p = links_info.parent_idx[I_l]
 
                         if i_p != -1:
-                            links_state.crb_inertial[i_p, i_b] = (
-                                links_state.crb_inertial[i_p, i_b] + links_state.crb_inertial[i_l, i_b]
-                            )
-                            links_state.crb_mass[i_p, i_b] = (
-                                links_state.crb_mass[i_p, i_b] + links_state.crb_mass[i_l, i_b]
-                            )
-
-                            links_state.crb_pos[i_p, i_b] = (
-                                links_state.crb_pos[i_p, i_b] + links_state.crb_pos[i_l, i_b]
-                            )
-                            links_state.crb_quat[i_p, i_b] = (
-                                links_state.crb_quat[i_p, i_b] + links_state.crb_quat[i_l, i_b]
-                            )
+                            links_state.crb_inertial[i_p, i_b] += links_state.crb_inertial[i_l, i_b]
+                            links_state.crb_mass[i_p, i_b] += links_state.crb_mass[i_l, i_b]
+                            links_state.crb_pos[i_p, i_b] += links_state.crb_pos[i_l, i_b]
+                            links_state.crb_quat[i_p, i_b] += links_state.crb_quat[i_l, i_b]
 
     # mass_mat
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_links, _B)
+        ti.ndrange(1, links_state.pos.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(links_state.pos.shape[0], links_state.pos.shape[1])
     ):
         for i_1 in (
             (
@@ -3973,7 +3978,9 @@ def func_compute_mass_matrix(
 
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_entities, _B)
+        ti.ndrange(1, links_state.pos.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1])
     ):
         for i_1 in (
             (
@@ -4053,6 +4060,7 @@ def func_compute_mass_matrix(
                     if i_d < entities_info.dof_end[i_e] and j_d < entities_info.dof_end[i_e] and j_d > i_d:
                         rigid_global_info.mass_mat[i_d, j_d, i_b] = rigid_global_info.mass_mat[j_d, i_d, i_b]
 
+                # In below blocks, we only update the diagonal terms of the mass matrix, which have not been read yet.
                 # Take into account motor armature
                 for i_d_ in (
                     range(entities_info.dof_start[i_e], entities_info.dof_end[i_e])
@@ -4063,9 +4071,7 @@ def func_compute_mass_matrix(
 
                     if i_d < entities_info.dof_end[i_e]:
                         I_d = [i_d, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else i_d
-                        rigid_global_info.mass_mat[i_d, i_d, i_b] = (
-                            rigid_global_info.mass_mat[i_d, i_d, i_b] + dofs_info.armature[I_d]
-                        )
+                        rigid_global_info.mass_mat[i_d, i_d, i_b] += dofs_info.armature[I_d]
 
                 # Take into account first-order correction terms for implicit integration scheme right away
                 if ti.static(implicit_damping):
