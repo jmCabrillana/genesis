@@ -1584,6 +1584,16 @@ class RigidSolver(Solver):
             is_backward=True,
         )
 
+        #     [func_bias_force]
+        backward_rigid_solver.kernel_bias_force.grad(
+            dofs_state=self.dofs_state,
+            links_state=self.links_state,
+            links_info=self.links_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            is_backward=True,
+        )
+
         pass
 
     def substep_post_coupling(self, f):
@@ -6786,12 +6796,11 @@ def func_bias_force(
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
-    _B = dofs_state.ctrl_mode.shape[1]
-    n_links = links_info.root_idx.shape[0]
-
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_links, _B)
+        ti.ndrange(1, dofs_state.ctrl_mode.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(links_info.root_idx.shape[0], dofs_state.ctrl_mode.shape[1])
     ):
         for i_1 in (
             (
