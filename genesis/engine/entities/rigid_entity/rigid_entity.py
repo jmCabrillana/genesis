@@ -97,6 +97,7 @@ class RigidEntity(Entity):
         self._load_model()
 
         self.init_tgt_vars()
+        self.init_ckpt()
 
     def init_tgt_keys(self):
 
@@ -108,6 +109,9 @@ class RigidEntity(Entity):
         self._tgt = []
         self._tgt_buffer = []
         self.init_tgt_keys()
+
+    def init_ckpt(self):
+        self._ckpt = dict()
 
     def _load_model(self):
         self._links = gs.List()
@@ -1617,13 +1621,21 @@ class RigidEntity(Entity):
     # ---------------------------------- control & io ------------------------------------
     # ------------------------------------------------------------------------------------
     def process_input(self, in_backward=False):
+        if in_backward:
+            # use negative index because buffer length might not be full
+            index = self._sim.cur_step_local - self._sim._steps_local
+            self._tgt = self._tgt_buffer[index].copy()
+        else:
+            self._tgt_buffer.append(self._tgt.copy())
+
         # Apply targets sequentially
         _tgt = self._tgt.copy()
         for tgt in _tgt:
             k = tgt["key"]
             assert k in self._tgt_keys, f"Invalid target key: {k} not in {self._tgt_keys}"
 
-            # We do not need zero velocity here because set_dofs_velocity will be in [tgt]
+            # We do not need zero velocity here because if it was true, [set_dofs_velocity] from zero_velocity would
+            # be in [tgt]
             zero_velocity = False
             if k == "pos":
                 _pos = tgt["pos"]
@@ -1661,7 +1673,62 @@ class RigidEntity(Entity):
         self._tgt = []
 
     def process_input_grad(self):
+        index = self._sim.cur_step_local - self._sim._steps_local
+        _tgt = self._tgt_buffer[index].copy()
+
+        for tgt in reversed(_tgt):
+            k = tgt["key"]
+            assert k in self._tgt_keys, f"Invalid target key: {k} not in {self._tgt_keys}"
+            if k == "pos":
+                _pos = tgt["pos"]
+                _envs_idx = tgt["envs_idx"]
+                _relative = tgt["relative"]
+                _unsafe = tgt["unsafe"]
+
+                if _pos is not None and _pos.requires_grad:
+                    _pos._backward_from_ti(self.set_pos_grad, _envs_idx, _relative, _unsafe)
+
+            elif k == "quat":
+                _quat = tgt["quat"]
+                _envs_idx = tgt["envs_idx"]
+                _relative = tgt["relative"]
+                _unsafe = tgt["unsafe"]
+
+                if _quat is not None and _quat.requires_grad:
+                    _quat._backward_from_ti(self.set_quat_grad, _envs_idx, _relative, _unsafe)
+
+            # elif k == "qpos":
+            #     _qpos = tgt["qpos"]
+            #     _qs_idx_local = tgt["qs_idx_local"]
+            #     _envs_idx = tgt["envs_idx"]
+            #     _unsafe = tgt["unsafe"]
+
+            #     self.set_qpos(
+            #         _qpos, qs_idx_local=_qs_idx_local, envs_idx=_envs_idx, zero_velocity=zero_velocity, unsafe=_unsafe
+            #     )
+            elif k == "dofs_velocity":
+                _velocity = tgt["velocity"]
+                _dofs_idx_local = tgt["dofs_idx_local"]
+                _envs_idx = tgt["envs_idx"]
+                _unsafe = tgt["unsafe"]
+
+                if _velocity is not None and _velocity.requires_grad:
+                    _velocity._backward_from_ti(self.set_dofs_velocity_grad, _dofs_idx_local, _envs_idx, _unsafe)
+
+            pass
         pass
+
+    def save_ckpt(self, ckpt_name):
+        if ckpt_name not in self._ckpt:
+            self._ckpt[ckpt_name] = {}
+        self._ckpt[ckpt_name]["_tgt_buffer"] = self._tgt_buffer.copy()
+        self._tgt_buffer.clear()
+
+    def load_ckpt(self, ckpt_name):
+        self._tgt_buffer = self._ckpt[ckpt_name]["_tgt_buffer"].copy()
+
+    def reset_grad(self):
+        self._tgt_buffer.clear()
 
     @gs.assert_built
     def get_state(self):
@@ -2050,6 +2117,18 @@ class RigidEntity(Entity):
             self.zero_all_dofs_velocity(envs_idx, unsafe=unsafe)
 
     @gs.assert_built
+    def set_pos_grad(self, envs_idx, relative, unsafe, pos_grad):
+        tmp_pos_grad = pos_grad.unsqueeze(-2).clone()
+        self._solver.set_base_links_pos_grad(
+            self._base_links_idx,
+            envs_idx,
+            relative,
+            unsafe,
+            tmp_pos_grad,
+        )
+        pos_grad.data = tmp_pos_grad.squeeze(-2)
+
+    @gs.assert_built
     def set_quat(self, quat, envs_idx=None, *, relative=False, zero_velocity=True, unsafe=False):
         """
         Set quaternion of the entity's base link.
@@ -2093,6 +2172,18 @@ class RigidEntity(Entity):
         )
         if zero_velocity:
             self.zero_all_dofs_velocity(envs_idx, unsafe=unsafe)
+
+    @gs.assert_built
+    def set_quat_grad(self, envs_idx, relative, unsafe, quat_grad):
+        tmp_quat_grad = quat_grad.unsqueeze(-2).clone()
+        self._solver.set_base_links_quat_grad(
+            self._base_links_idx,
+            envs_idx,
+            relative,
+            unsafe,
+            tmp_quat_grad,
+        )
+        quat_grad.data = tmp_quat_grad.squeeze(-2)
 
     @gs.assert_built
     def get_verts(self):
@@ -2305,6 +2396,11 @@ class RigidEntity(Entity):
         )
         dofs_idx = self._get_idx(dofs_idx_local, self.n_dofs, self._dof_start, unsafe=True)
         self._solver.set_dofs_velocity(velocity, dofs_idx, envs_idx, skip_forward=False, unsafe=unsafe)
+
+    @gs.assert_built
+    def set_dofs_velocity_grad(self, dofs_idx_local, envs_idx, unsafe, velocity_grad):
+        dofs_idx = self._get_idx(dofs_idx_local, self.n_dofs, self._dof_start, unsafe=True)
+        self._solver.set_dofs_velocity_grad(dofs_idx, envs_idx, unsafe, velocity_grad)
 
     @gs.assert_built
     def set_dofs_frictionloss(self, frictionloss, dofs_idx_local=None, envs_idx=None, *, unsafe=False):

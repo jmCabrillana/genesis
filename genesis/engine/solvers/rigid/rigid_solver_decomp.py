@@ -1529,6 +1529,11 @@ class RigidSolver(Solver):
                 is_backward=True,
             )
 
+        qpos_grad = self._rigid_global_info.qpos.grad.to_numpy()
+        dofs_vel_grad = self.dofs_state.vel.grad.to_numpy()
+        if np.isnan(qpos_grad).sum() > 0 or np.isnan(dofs_vel_grad).sum() > 0:
+            gs.raise_exception(f"Nan grad in qpos or dofs_vel found at step {self._sim.cur_step_global}")
+
         kernel_copy_next_to_curr.grad(
             dofs_state=self.dofs_state,
             rigid_global_info=self._rigid_global_info,
@@ -1661,7 +1666,57 @@ class RigidSolver(Solver):
             is_backward=True,
         )
 
-        pass
+        # If it was the very first substep, we need to backpropagate through the initial update of the cartesian space
+        if self._enable_mujoco_compatibility or self._sim.cur_substep_global == 0:
+            # [kernel_update_cartesian_space]
+
+            backward_rigid_solver.kernel_update_geoms.grad(
+                entities_info=self.entities_info,
+                geoms_info=self.geoms_info,
+                geoms_state=self.geoms_state,
+                links_state=self.links_state,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                force_update_fixed_geoms=False,
+                is_backward=True,
+            )
+
+            backward_rigid_solver.kernel_forward_velocity.grad(
+                entities_info=self.entities_info,
+                links_info=self.links_info,
+                links_state=self.links_state,
+                joints_info=self.joints_info,
+                dofs_state=self.dofs_state,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                is_backward=True,
+            )
+
+            backward_rigid_solver.kernel_COM_links.grad(
+                links_state=self.links_state,
+                links_info=self.links_info,
+                joints_state=self.joints_state,
+                joints_info=self.joints_info,
+                dofs_state=self.dofs_state,
+                dofs_info=self.dofs_info,
+                entities_info=self.entities_info,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                is_backward=True,
+            )
+
+            backward_rigid_solver.kernel_forward_kinematics.grad(
+                links_state=self.links_state,
+                links_info=self.links_info,
+                joints_state=self.joints_state,
+                joints_info=self.joints_info,
+                dofs_state=self.dofs_state,
+                dofs_info=self.dofs_info,
+                entities_info=self.entities_info,
+                rigid_global_info=self._rigid_global_info,
+                static_rigid_sim_config=self._static_rigid_sim_config,
+                is_backward=True,
+            )
 
     def substep_post_coupling(self, f):
         from genesis.engine.couplers import SAPCoupler
@@ -1763,7 +1818,9 @@ class RigidSolver(Solver):
             self.add_grad_from_state(state)
 
     def reset_grad(self):
-        pass
+        for entity in self._entities:
+            entity.reset_grad()
+        self._queried_states.clear()
 
     def update_geoms_render_T(self):
         kernel_update_geoms_render_T(
@@ -1877,13 +1934,19 @@ class RigidSolver(Solver):
     def save_ckpt(self, ckpt_name):
         if ckpt_name not in self._ckpt:
             self._ckpt[ckpt_name] = dict()
-            self._ckpt[ckpt_name]["qpos"] = self._rigid_adjoint_cache.qpos.to_numpy()
-            self._ckpt[ckpt_name]["dofs_vel"] = self._rigid_adjoint_cache.dofs_vel.to_numpy()
+
+        self._ckpt[ckpt_name]["qpos"] = self._rigid_adjoint_cache.qpos.to_numpy()
+        self._ckpt[ckpt_name]["dofs_vel"] = self._rigid_adjoint_cache.dofs_vel.to_numpy()
+        self._ckpt[ckpt_name]["dofs_acc"] = self._rigid_adjoint_cache.dofs_acc.to_numpy()
+
+        for entity in self._entities:
+            entity.save_ckpt(ckpt_name)
 
     def load_ckpt(self, ckpt_name):
         # Set first frame
         self._rigid_global_info.qpos.from_numpy(self._ckpt[ckpt_name]["qpos"][0])
         self.dofs_state.vel.from_numpy(self._ckpt[ckpt_name]["dofs_vel"][0])
+        self.dofs_state.acc.from_numpy(self._ckpt[ckpt_name]["dofs_acc"][0])
 
         if not self._enable_mujoco_compatibility:
             kernel_update_cartesian_space(
@@ -1900,6 +1963,9 @@ class RigidSolver(Solver):
                 static_rigid_sim_config=self._static_rigid_sim_config,
                 force_update_fixed_geoms=False,
             )
+
+        for entity in self._entities:
+            entity.load_ckpt(ckpt_name)
 
     def is_active(self):
         return self.n_links > 0
@@ -2077,6 +2143,15 @@ class RigidSolver(Solver):
                     gs.raise_exception("Expecting 2D input tensor.")
         return tensor, _inputs_idx, envs_idx
 
+    def _sanitize_2D_io_variables_grad(
+        self,
+        grad_after_sanitization,
+        grad_before_sanitization,
+    ):
+        if grad_after_sanitization.shape != grad_before_sanitization.shape:
+            gs.raise_exception("Shape of grad_after_sanitization and grad_before_sanitization do not match.")
+        return grad_after_sanitization
+
     def _get_qs_idx(self, qs_idx_local=None):
         return self._get_qs_idx_local(qs_idx_local) + self._q_start
 
@@ -2122,6 +2197,37 @@ class RigidSolver(Solver):
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
 
+    def set_base_links_pos_grad(self, links_idx, envs_idx, relative, unsafe, pos_grad):
+        if links_idx is None:
+            links_idx = self._base_links_idx
+        pos_grad_, links_idx, envs_idx = self._sanitize_2D_io_variables(
+            pos_grad.clone(),
+            links_idx,
+            self.n_links,
+            3,
+            envs_idx,
+            idx_name="links_idx",
+            skip_allocation=True,
+            unsafe=unsafe,
+        )
+        if self.n_envs == 0:
+            pos_grad_ = pos_grad_.unsqueeze(0)
+        if not unsafe and not torch.isin(links_idx, self._base_links_idx).all():
+            gs.raise_exception("`links_idx` contains at least one link that is not a base link.")
+        kernel_set_links_pos_grad(
+            relative,
+            pos_grad_,
+            links_idx,
+            envs_idx,
+            links_info=self.links_info,
+            links_state=self.links_state,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+        )
+        if self.n_envs == 0:
+            pos_grad_ = pos_grad_.squeeze(0)
+        pos_grad.data = self._sanitize_2D_io_variables_grad(pos_grad_, pos_grad)
+
     def set_links_quat(self, quat, links_idx=None, envs_idx=None, *, skip_forward=False, unsafe=False):
         raise DeprecationError("This method has been removed. Please use 'set_base_links_quat' instead.")
 
@@ -2163,6 +2269,38 @@ class RigidSolver(Solver):
                 static_rigid_sim_config=self._static_rigid_sim_config,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
+
+    def set_base_links_quat_grad(self, links_idx, envs_idx, relative, unsafe, quat_grad):
+        if links_idx is None:
+            links_idx = self._base_links_idx
+        quat_grad_, links_idx, envs_idx = self._sanitize_2D_io_variables(
+            quat_grad.clone(),
+            links_idx,
+            self.n_links,
+            4,
+            envs_idx,
+            idx_name="links_idx",
+            skip_allocation=True,
+            unsafe=unsafe,
+        )
+        if self.n_envs == 0:
+            quat_grad_ = quat_grad_.unsqueeze(0)
+        if not unsafe and not torch.isin(links_idx, self._base_links_idx).all():
+            gs.raise_exception("`links_idx` contains at least one link that is not a base link.")
+        assert relative == False, "Backward pass for relative quaternion is not supported yet."
+        kernel_set_links_quat_grad(
+            relative,
+            quat_grad_,
+            links_idx,
+            envs_idx,
+            links_info=self.links_info,
+            links_state=self.links_state,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+        )
+        if self.n_envs == 0:
+            quat_grad_ = quat_grad_.squeeze(0)
+        quat_grad.data = self._sanitize_2D_io_variables_grad(quat_grad_, quat_grad)
 
     def set_links_mass_shift(self, mass, links_idx=None, envs_idx=None, *, unsafe=False):
         mass, links_idx, envs_idx = self._sanitize_1D_io_variables(
@@ -2427,6 +2565,12 @@ class RigidSolver(Solver):
                 static_rigid_sim_config=self._static_rigid_sim_config,
                 static_rigid_sim_cache_key=self._static_rigid_sim_cache_key,
             )
+
+    def set_dofs_velocity_grad(self, dofs_idx, envs_idx, unsafe, velocity_grad):
+        raise NotImplementedError("Backward pass for set_dofs_velocity_grad is not implemented yet.")
+        velocity_grad_, dofs_idx_, envs_idx_ = self._sanitize_1D_io_variables(
+            velocity_grad, dofs_idx, self.n_dofs, envs_idx, skip_allocation=True, unsafe=unsafe
+        )
 
     def set_dofs_position(self, position, dofs_idx=None, envs_idx=None, *, skip_forward=False, unsafe=False):
         position, dofs_idx, envs_idx = self._sanitize_1D_io_variables(
@@ -7471,6 +7615,35 @@ def kernel_set_links_pos(
 
 
 @ti.kernel(pure=gs.use_pure)
+def kernel_set_links_pos_grad(
+    relative: ti.i32,
+    pos_grad: ti.types.ndarray(),
+    links_idx: ti.types.ndarray(),
+    envs_idx: ti.types.ndarray(),
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+):
+
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_l_, i_b_ in ti.ndrange(links_idx.shape[0], envs_idx.shape[0]):
+        i_b = envs_idx[i_b_]
+        i_l = links_idx[i_l_]
+        I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
+
+        if links_info.parent_idx[I_l] == -1 and links_info.is_fixed[I_l]:
+            for j in ti.static(range(3)):
+                pos_grad[i_b_, i_l_, j] = links_state.pos.grad[i_l, i_b][j]
+                links_state.pos.grad[i_l, i_b][j] = 0.0
+        else:
+            q_start = links_info.q_start[I_l]
+            for j in ti.static(range(3)):
+                pos_grad[i_b_, i_l_, j] = rigid_global_info.qpos.grad[q_start + j, i_b]
+                rigid_global_info.qpos.grad[q_start + j, i_b] = 0.0
+
+
+@ti.kernel(pure=gs.use_pure)
 def kernel_set_links_quat(
     relative: ti.i32,
     quat: ti.types.ndarray(),
@@ -7522,6 +7695,35 @@ def kernel_set_links_quat(
                 q_start = links_info.q_start[I_l]
                 for j in ti.static(range(4)):
                     rigid_global_info.qpos[q_start + j + 3, i_b] = quat[i_b_, i_l_, j]
+
+
+@ti.kernel(pure=gs.use_pure)
+def kernel_set_links_quat_grad(
+    relative: ti.i32,
+    quat_grad: ti.types.ndarray(),
+    links_idx: ti.types.ndarray(),
+    envs_idx: ti.types.ndarray(),
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+    rigid_global_info: array_class.RigidGlobalInfo,
+    static_rigid_sim_config: ti.template(),
+):
+
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
+    for i_l_, i_b_ in ti.ndrange(links_idx.shape[0], envs_idx.shape[0]):
+        i_b = envs_idx[i_b_]
+        i_l = links_idx[i_l_]
+        I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
+
+        if links_info.parent_idx[I_l] == -1 and links_info.is_fixed[I_l]:
+            for j in ti.static(range(4)):
+                quat_grad[i_b_, i_l_, j] = links_state.quat.grad[i_l, i_b][j]
+                links_state.quat.grad[i_l, i_b][j] = 0.0
+        else:
+            q_start = links_info.q_start[I_l]
+            for j in ti.static(range(4)):
+                quat_grad[i_b_, i_l_, j] = rigid_global_info.qpos.grad[q_start + j + 3, i_b]
+                rigid_global_info.qpos.grad[q_start + j + 3, i_b] = 0.0
 
 
 @ti.kernel(pure=gs.use_pure)

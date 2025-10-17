@@ -221,8 +221,6 @@ class Simulator(RBC):
         for solver, solver_state in zip(self._solvers, state):
             if solver.n_entities > 0:
                 solver.set_state(0, solver_state, envs_idx)
-            # Reset checkpoints
-            solver.init_ckpt()
 
         self.coupler.reset(envs_idx=envs_idx)
 
