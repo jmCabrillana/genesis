@@ -1594,6 +1594,16 @@ class RigidSolver(Solver):
             is_backward=True,
         )
 
+        #     [func_update_force]
+        backward_rigid_solver.kernel_update_force.grad(
+            links_state=self.links_state,
+            links_info=self.links_info,
+            entities_info=self.entities_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            is_backward=True,
+        )
+
         pass
 
     def substep_post_coupling(self, f):
@@ -6664,13 +6674,11 @@ def func_update_force(
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
-    _B = links_state.pos.shape[1]
-    n_links = links_info.root_idx.shape[0]
-    n_entities = entities_info.n_links.shape[0]
-
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_links, _B)
+        ti.ndrange(1, links_state.pos.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(links_info.root_idx.shape[0], links_state.pos.shape[1])
     ):
         for i_1 in (
             (
@@ -6710,16 +6718,18 @@ def func_update_force(
                     links_state.cd_vel[i_l, i_b],
                     links_state.cd_ang[i_l, i_b],
                 )
-                f2_ang, f2_vel = gu.motion_cross_force(
+                f3_ang, f3_vel = gu.motion_cross_force(
                     links_state.cd_ang[i_l, i_b], links_state.cd_vel[i_l, i_b], f2_ang, f2_vel
                 )
 
-                links_state.cfrc_vel[i_l, i_b] = f1_vel + f2_vel + links_state.cfrc_applied_vel[i_l, i_b]
-                links_state.cfrc_ang[i_l, i_b] = f1_ang + f2_ang + links_state.cfrc_applied_ang[i_l, i_b]
+                links_state.cfrc_vel[i_l, i_b] = f1_vel + f3_vel + links_state.cfrc_applied_vel[i_l, i_b]
+                links_state.cfrc_ang[i_l, i_b] = f1_ang + f3_ang + links_state.cfrc_applied_ang[i_l, i_b]
 
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_entities, _B)
+        ti.ndrange(1, links_state.pos.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(entities_info.n_links.shape[0], links_state.pos.shape[1])
     ):
         for i_1 in (
             (
@@ -6755,12 +6765,8 @@ def func_update_force(
                         I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
                         i_p = links_info.parent_idx[I_l]
                         if i_p != -1:
-                            links_state.cfrc_vel[i_p, i_b] = (
-                                links_state.cfrc_vel[i_p, i_b] + links_state.cfrc_vel[i_l, i_b]
-                            )
-                            links_state.cfrc_ang[i_p, i_b] = (
-                                links_state.cfrc_ang[i_p, i_b] + links_state.cfrc_ang[i_l, i_b]
-                            )
+                            links_state.cfrc_vel[i_p, i_b] += links_state.cfrc_vel[i_l, i_b]
+                            links_state.cfrc_ang[i_p, i_b] += links_state.cfrc_ang[i_l, i_b]
 
 
 @ti.func
