@@ -20,6 +20,7 @@ V_MAT = ti.Matrix.ndarray if use_ndarray else ti.Matrix.field
 
 @dataclasses.dataclass
 class StructRigidGlobalInfo:
+    # *_bw: Cache for backward pass
     n_awake_dofs: V_ANNOTATION
     awake_dofs: V_ANNOTATION
     n_awake_entities: V_ANNOTATION
@@ -34,6 +35,7 @@ class StructRigidGlobalInfo:
     geoms_init_AABB: V_ANNOTATION
     mass_mat: V_ANNOTATION
     mass_mat_L: V_ANNOTATION
+    mass_mat_L_bw: V_ANNOTATION
     mass_mat_D_inv: V_ANNOTATION
     _mass_mat_mask: V_ANNOTATION
     meaninertia: V_ANNOTATION
@@ -97,6 +99,9 @@ def get_rigid_global_info(solver):
         "geoms_init_AABB": V_VEC(3, dtype=gs.ti_float, shape=(solver.n_geoms_, 8)),
         "mass_mat": V(dtype=gs.ti_float, shape=f_batch((solver.n_dofs_, solver.n_dofs_)), needs_grad=requires_grad),
         "mass_mat_L": V(dtype=gs.ti_float, shape=f_batch((solver.n_dofs_, solver.n_dofs_)), needs_grad=requires_grad),
+        "mass_mat_L_bw": V(
+            dtype=gs.ti_float, shape=f_batch((2, solver.n_dofs_, solver.n_dofs_)), needs_grad=requires_grad
+        ),
         "mass_mat_D_inv": V(dtype=gs.ti_float, shape=f_batch((solver.n_dofs_,)), needs_grad=requires_grad),
         "_mass_mat_mask": V(dtype=gs.ti_int, shape=f_batch(solver.n_entities_)),
         "meaninertia": V(dtype=gs.ti_float, shape=f_batch()),

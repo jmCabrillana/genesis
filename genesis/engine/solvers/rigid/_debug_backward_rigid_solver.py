@@ -24,6 +24,7 @@ from .constraint_solver_decomp_island import ConstraintSolverIsland
 from .rigid_solver_decomp_util import func_wakeup_entity_and_its_temp_island
 
 
+# ================================================== func_update_geoms ==================================================
 @ti.kernel
 def kernel_update_geoms(
     entities_info: array_class.EntitiesInfo,
@@ -115,6 +116,7 @@ def func_update_geoms(
                     geoms_state.verts_updated[i_g, i_b] = False
 
 
+# ================================================== func_forward_velocity ==================================================
 @ti.kernel
 def kernel_forward_velocity(
     entities_info: array_class.EntitiesInfo,
@@ -306,6 +308,7 @@ def func_forward_velocity_entity(
             links_state.cd_ang[i_l, i_b] = links_state.cd_ang_bw[i_l, i_j_, i_b]
 
 
+# ================================================== func_COM_links ==================================================
 @ti.kernel
 def kernel_COM_links(
     links_state: array_class.LinksState,
@@ -673,6 +676,7 @@ def func_COM_links(
                                 )
 
 
+# ================================================== func_forward_kinematics ==================================================
 @ti.kernel
 def kernel_forward_kinematics(
     links_state: array_class.LinksState,
@@ -908,6 +912,7 @@ def func_forward_kinematics_entity(
                 links_state.quat[i_l, i_b] = links_state.quat_bw[i_l, i_j_, i_b]
 
 
+# ================================================== func_integrate ==================================================
 @ti.kernel
 def kernel_integrate(
     dofs_state: array_class.DofsState,
@@ -1044,45 +1049,19 @@ def kernel_integrate(
                                 )
 
 
+# ================================================== func_factor_mass ==================================================
 @ti.kernel
-def kernel_implicit_damping(
+def kernel_factor_mass(
+    implicit_damping: ti.template(),
+    entities_info: array_class.EntitiesInfo,
     dofs_state: array_class.DofsState,
     dofs_info: array_class.DofsInfo,
-    entities_info: array_class.EntitiesInfo,
     rigid_global_info: array_class.RigidGlobalInfo,
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
-    # Determine whether the mass matrix must be re-computed to take into account first-order correction terms.
-    # Note that avoiding inverting the mass matrix twice would not only speed up simulation but also improving
-    # numerical stability as computing post-damping accelerations from forces is not necessary anymore.
-    if ti.static(
-        not static_rigid_sim_config.enable_mujoco_compatibility
-        or static_rigid_sim_config.integrator == gs.integrator.Euler
-    ):
-        for i_e, i_b in ti.ndrange(entities_info.dof_start.shape[0], dofs_state.ctrl_mode.shape[1]):
-            rigid_global_info._mass_mat_mask[i_e, i_b] = 0
-
-        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-        for i_e, i_b in ti.ndrange(entities_info.dof_start.shape[0], dofs_state.ctrl_mode.shape[1]):
-            entity_dof_start = entities_info.dof_start[i_e]
-            entity_dof_end = entities_info.dof_end[i_e]
-            # This part does not need to be differentiable, because mass_mat_mask is integer
-            for i_d_ in range(entity_dof_start, entity_dof_end):
-                i_d = i_d_ if ti.static(not is_backward) else entities_info.dof_start[i_e] + i_d_
-                if i_d < entity_dof_end:
-                    I_d = [i_d, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else i_d
-                    if dofs_info.damping[I_d] > gs.EPS:
-                        rigid_global_info._mass_mat_mask[i_e, i_b] = 1
-                    if ti.static(static_rigid_sim_config.integrator != gs.integrator.Euler):
-                        if (
-                            (dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.POSITION)
-                            or (dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.VELOCITY)
-                        ) and dofs_info.kv[I_d] > gs.EPS:
-                            rigid_global_info._mass_mat_mask[i_e, i_b] = 1
-
     func_factor_mass(
-        implicit_damping=True,
+        implicit_damping=implicit_damping,
         entities_info=entities_info,
         dofs_state=dofs_state,
         dofs_info=dofs_info,
@@ -1108,79 +1087,116 @@ def func_factor_mass(
     TODO: Implement backward pass manually for accelerating its compilation time (because of nested static inner loops).
     """
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-    for i_e, i_b in ti.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[2]):
-        if rigid_global_info._mass_mat_mask[f, i_e, i_b] == 1:
+    for i_e, i_b in ti.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1]):
+        if rigid_global_info._mass_mat_mask[i_e, i_b] == 1:
             entity_dof_start = entities_info.dof_start[i_e]
             entity_dof_end = entities_info.dof_end[i_e]
             n_dofs = entities_info.n_dofs[i_e]
 
-            for i_d0 in ti.static(range(max_n_dofs_per_entity)):
+            for i_d0 in (
+                range(n_dofs)
+                if ti.static(not is_backward)
+                else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+            ):
                 if i_d0 < n_dofs:
                     i_d = entity_dof_start + i_d0
-                    for j_d in range(entity_dof_start, i_d + 1):
-                        rigid_adjoint_cache.mass_mat_L0[f, i_d, j_d, i_b] = rigid_global_info.mass_mat[f, i_d, j_d, i_b]
+                    i_pr = (entity_dof_start + entity_dof_end - 1) - i_d
+                    for j_d_ in (
+                        range(entity_dof_start, i_d + 1)
+                        if ti.static(not is_backward)
+                        else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                    ):
+                        j_d = j_d_ if ti.static(not is_backward) else (j_d_ + entities_info.dof_start[i_e])
+                        j_pr = (entity_dof_start + entity_dof_end - 1) - j_d
+                        if j_d < i_d + 1:
+                            rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] = rigid_global_info.mass_mat[
+                                i_d, j_d, i_b
+                            ]
+                            rigid_global_info.mass_mat_L_bw[0, j_pr, i_pr, i_b] = rigid_global_info.mass_mat[
+                                i_d, j_d, i_b
+                            ]
 
                     if ti.static(implicit_damping):
                         I_d = [i_d, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else i_d
-                        rigid_adjoint_cache.mass_mat_L0[f, i_d, i_d, i_b] += (
-                            dofs_info.damping[I_d] * static_rigid_sim_config.substep_dt
+                        rigid_global_info.mass_mat_L_bw[0, i_pr, i_pr, i_b] += (
+                            dofs_info.damping[I_d] * rigid_global_info.substep_dt[i_b]
                         )
                         if ti.static(static_rigid_sim_config.integrator == gs.integrator.implicitfast):
-                            if (dofs_state.ctrl_mode[f, i_d, i_b] == gs.CTRL_MODE.POSITION) or (
-                                dofs_state.ctrl_mode[f, i_d, i_b] == gs.CTRL_MODE.VELOCITY
+                            if (dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.POSITION) or (
+                                dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.VELOCITY
                             ):
-                                rigid_adjoint_cache.mass_mat_L0[f, i_d, i_d, i_b] += (
-                                    dofs_info.kv[I_d] * static_rigid_sim_config.substep_dt
+                                rigid_global_info.mass_mat_L_bw[0, i_pr, i_pr, i_b] += (
+                                    dofs_info.kv[I_d] * rigid_global_info.substep_dt[i_b]
                                 )
 
-            # Cholesky-Banachiewicz algorithm for autodiff (compute L of LL^T)
+            # Cholesky-Banachiewicz algorithm (in the perturbed indices), access pattern is safe for autodiff
             # https://en.wikipedia.org/wiki/Cholesky_decomposition
-            for i_d0 in ti.static(range(max_n_dofs_per_entity)):
-                for i_d1 in ti.static(range(max_n_dofs_per_entity)):
-                    if i_d0 < n_dofs and i_d1 < n_dofs and i_d1 <= i_d0:
-                        # Will finalize [f, i_d, j_d, i_b] of mass_mat_L1
-                        i_d = entity_dof_start + i_d0
-                        j_d = entity_dof_start + i_d1
+            for p_i0 in (
+                range(n_dofs)
+                if ti.static(not is_backward)
+                else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+            ):
+                for p_j0 in (
+                    range(p_i0 + 1)
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
+                    if p_i0 < n_dofs and p_j0 < n_dofs and p_j0 <= p_i0:
+                        # j_pr <= i_pr
+                        i_pr = entity_dof_start + p_i0
+                        j_pr = entity_dof_start + p_j0
 
-                        sum = 0.0
-                        for i_d2 in ti.static(range(max_n_dofs_per_entity)):
-                            if i_d2 < i_d1:
-                                # Will read [f, i_d, k_d, i_b] and [f, j_d, k_d, i_b] of mass_mat_L1, which are already
-                                # finalized in the previous iterations (k_d < j_d, j_d < i_d), so safe for autodiff
-                                k_d = entity_dof_start + i_d2
+                        sum = gs.ti_float(0.0)
+                        for p_k0 in (
+                            range(p_j0)
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                        ):
+                            # k_pr < j_pr
+                            if p_k0 < p_j0:
+                                k_pr = entity_dof_start + p_k0
                                 sum += (
-                                    rigid_adjoint_cache.mass_mat_L1[f, i_d, k_d, i_b]
-                                    * rigid_adjoint_cache.mass_mat_L1[f, j_d, k_d, i_b]
+                                    rigid_global_info.mass_mat_L_bw[1, i_pr, k_pr, i_b]
+                                    * rigid_global_info.mass_mat_L_bw[1, j_pr, k_pr, i_b]
                                 )
 
-                        if i_d == j_d:
-                            rigid_adjoint_cache.mass_mat_L1[f, i_d, j_d, i_b] = ti.sqrt(
-                                rigid_adjoint_cache.mass_mat_L0[f, i_d, j_d, i_b] - sum
+                        if p_i0 == p_j0:
+                            rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = ti.sqrt(
+                                rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
                             )
                         else:
-                            # It's safe to read [f, j_d, j_d, i_b] of mass_mat_L1, because j_d < i_d
-                            rigid_adjoint_cache.mass_mat_L1[f, i_d, j_d, i_b] = (
-                                1.0 / rigid_adjoint_cache.mass_mat_L1[f, j_d, j_d, i_b]
-                            ) * (rigid_adjoint_cache.mass_mat_L0[f, i_d, j_d, i_b] - sum)
+                            rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = (
+                                rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
+                            ) / rigid_global_info.mass_mat_L_bw[1, j_pr, j_pr, i_b]
 
-            # Convert to LDL^T
-            for i_d0 in ti.static(range(max_n_dofs_per_entity)):
-                for i_d1 in ti.static(range(max_n_dofs_per_entity)):
+            for i_d0 in (
+                range(n_dofs)
+                if ti.static(not is_backward)
+                else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+            ):
+                for i_d1 in (
+                    range(i_d0 + 1)
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
                     if i_d0 < n_dofs and i_d1 < n_dofs and i_d1 <= i_d0:
                         i_d = entity_dof_start + i_d0
                         j_d = entity_dof_start + i_d1
+                        i_pr = (entity_dof_start + entity_dof_end - 1) - i_d
+                        j_pr = (entity_dof_start + entity_dof_end - 1) - j_d
 
-                        rigid_global_info.mass_mat_L[f, i_d, j_d, i_b] = (
-                            rigid_adjoint_cache.mass_mat_L1[f, i_d, j_d, i_b]
-                            / rigid_adjoint_cache.mass_mat_L1[f, j_d, j_d, i_b]
+                        rigid_global_info.mass_mat_L[i_d, j_d, i_b] = (
+                            rigid_global_info.mass_mat_L_bw[1, j_pr, i_pr, i_b]
+                            / rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b]
                         )
 
                         if i_d == j_d:
-                            rigid_global_info.mass_mat_D_inv[f, i_d, i_b] = 1.0 / (
-                                rigid_adjoint_cache.mass_mat_L1[f, i_d, i_d, i_b] ** 2
+                            rigid_global_info.mass_mat_D_inv[i_d, i_b] = 1.0 / (
+                                rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b] ** 2
                             )
 
 
+# ================================================== func_compute_mass_mask ==================================================
 @ti.kernel
 def kernel_compute_mass_mask(
     dofs_state: array_class.DofsState,
@@ -1237,6 +1253,7 @@ def func_compute_mass_mask(
                             rigid_global_info._mass_mat_mask[i_e, i_b] = 1
 
 
+# ================================================== func_solve_mass_batched ==================================================
 @ti.func
 def func_solve_mass_batched(
     vec: array_class.V_ANNOTATION,
