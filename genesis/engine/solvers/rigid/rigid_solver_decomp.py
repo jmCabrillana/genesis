@@ -285,7 +285,13 @@ class RigidSolver(Solver):
             if self._static_rigid_sim_config.use_hibernation:
                 gs.raise_exception("Hibernation is not supported yet when requires_grad is True")
             if self._static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast:
-                gs.raise_exception("Only approximate_implicitfast integrator is supported for backward pass yet.")
+                gs.raise_exception(
+                    "Only approximate_implicitfast integrator is supported yet when requires_grad is True."
+                )
+            from genesis.engine.couplers import SAPCoupler
+
+            if isinstance(self.sim.coupler, SAPCoupler):
+                gs.raise_exception("SAPCoupler is not supported yet when requires_grad is True.")
 
         # Add terms for static inner loops, use 0 if not requires_grad to avoid re-compilation
         self._static_rigid_sim_config.max_n_links_per_entity = (
@@ -1555,10 +1561,6 @@ class RigidSolver(Solver):
             is_backward=True,
         )
 
-        #   [func_implicit_damping]
-        if self._static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast:
-            raise NotImplementedError("Only approximate_implicitfast integrator is supported for backward pass yet.")
-
         #   [func_update_acc]
         backward_rigid_solver.kernel_update_acc.grad(
             update_cacc=True,
@@ -1570,6 +1572,18 @@ class RigidSolver(Solver):
             static_rigid_sim_config=self._static_rigid_sim_config,
             is_backward=True,
         )
+
+        # [kernel_step_1]
+        #   [func_forward_dynamics]
+        #     [func_compute_qacc]
+        backward_rigid_solver.kernel_compute_qacc.grad(
+            dofs_state=self.dofs_state,
+            entities_info=self.entities_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            is_backward=True,
+        )
+
         pass
 
     def substep_post_coupling(self, f):
@@ -6833,9 +6847,6 @@ def func_compute_qacc(
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
-    _B = dofs_state.ctrl_mode.shape[1]
-    n_entities = entities_info.n_links.shape[0]
-
     func_solve_mass(
         vec=dofs_state.force,
         out=dofs_state.acc_smooth,
@@ -6846,9 +6857,12 @@ def func_compute_qacc(
         is_backward=is_backward,
     )
 
+    # Assume this is the outermost loop
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_entities, _B)
+        ti.ndrange(1, dofs_state.ctrl_mode.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1])
     ):
         for i_1 in (
             (
