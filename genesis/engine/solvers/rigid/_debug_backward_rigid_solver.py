@@ -1086,114 +1086,232 @@ def func_factor_mass(
 
     TODO: Implement backward pass manually for accelerating its compilation time (because of nested static inner loops).
     """
-    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
-    for i_e, i_b in ti.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1]):
-        if rigid_global_info._mass_mat_mask[i_e, i_b] == 1:
-            entity_dof_start = entities_info.dof_start[i_e]
-            entity_dof_end = entities_info.dof_end[i_e]
-            n_dofs = entities_info.n_dofs[i_e]
+    if ti.static(not is_backward):
+        _B = dofs_state.ctrl_mode.shape[1]
+        n_entities = entities_info.n_links.shape[0]
 
-            for i_d0 in (
-                range(n_dofs)
+        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+        for i_0, i_b in (
+            ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_entities, _B)
+        ):
+            for i_1 in (
+                (
+                    # Dynamic inner loop for forward pass
+                    range(rigid_global_info.n_awake_entities[i_b])
+                    if ti.static(static_rigid_sim_config.use_hibernation)
+                    else range(1)
+                )
                 if ti.static(not is_backward)
-                else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                else (
+                    # Static inner loop for backward pass
+                    ti.static(range(static_rigid_sim_config.max_n_awake_entities))
+                    if ti.static(static_rigid_sim_config.use_hibernation)
+                    else ti.static(range(1))
+                )
             ):
-                if i_d0 < n_dofs:
-                    i_d = entity_dof_start + i_d0
-                    i_pr = (entity_dof_start + entity_dof_end - 1) - i_d
-                    for j_d_ in (
-                        range(entity_dof_start, i_d + 1)
-                        if ti.static(not is_backward)
-                        else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
-                    ):
-                        j_d = j_d_ if ti.static(not is_backward) else (j_d_ + entities_info.dof_start[i_e])
-                        j_pr = (entity_dof_start + entity_dof_end - 1) - j_d
-                        if j_d < i_d + 1:
-                            rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] = rigid_global_info.mass_mat[
-                                i_d, j_d, i_b
-                            ]
-                            rigid_global_info.mass_mat_L_bw[0, j_pr, i_pr, i_b] = rigid_global_info.mass_mat[
-                                i_d, j_d, i_b
-                            ]
-
-                    if ti.static(implicit_damping):
-                        I_d = [i_d, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else i_d
-                        rigid_global_info.mass_mat_L_bw[0, i_pr, i_pr, i_b] += (
-                            dofs_info.damping[I_d] * rigid_global_info.substep_dt[i_b]
-                        )
-                        if ti.static(static_rigid_sim_config.integrator == gs.integrator.implicitfast):
-                            if (dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.POSITION) or (
-                                dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.VELOCITY
-                            ):
-                                rigid_global_info.mass_mat_L_bw[0, i_pr, i_pr, i_b] += (
-                                    dofs_info.kv[I_d] * rigid_global_info.substep_dt[i_b]
-                                )
-
-            # Cholesky-Banachiewicz algorithm (in the perturbed indices), access pattern is safe for autodiff
-            # https://en.wikipedia.org/wiki/Cholesky_decomposition
-            for p_i0 in (
-                range(n_dofs)
-                if ti.static(not is_backward)
-                else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
-            ):
-                for p_j0 in (
-                    range(p_i0 + 1)
-                    if ti.static(not is_backward)
-                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                if i_1 < (
+                    rigid_global_info.n_awake_entities[i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 1
                 ):
-                    if p_i0 < n_dofs and p_j0 < n_dofs and p_j0 <= p_i0:
-                        # j_pr <= i_pr
-                        i_pr = entity_dof_start + p_i0
-                        j_pr = entity_dof_start + p_j0
+                    i_e = (
+                        rigid_global_info.awake_entities[i_1, i_b]
+                        if ti.static(static_rigid_sim_config.use_hibernation)
+                        else i_0
+                    )
 
-                        sum = gs.ti_float(0.0)
-                        for p_k0 in (
-                            range(p_j0)
+                    if rigid_global_info._mass_mat_mask[i_e, i_b] == 1:
+                        entity_dof_start = entities_info.dof_start[i_e]
+                        entity_dof_end = entities_info.dof_end[i_e]
+                        n_dofs = entities_info.n_dofs[i_e]
+
+                        for i_d_ in (
+                            range(entity_dof_start, entity_dof_end)
                             if ti.static(not is_backward)
                             else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
                         ):
-                            # k_pr < j_pr
-                            if p_k0 < p_j0:
-                                k_pr = entity_dof_start + p_k0
-                                sum += (
-                                    rigid_global_info.mass_mat_L_bw[1, i_pr, k_pr, i_b]
-                                    * rigid_global_info.mass_mat_L_bw[1, j_pr, k_pr, i_b]
+                            i_d = i_d_ if ti.static(not is_backward) else entities_info.dof_start[i_e] + i_d_
+
+                            if i_d < entity_dof_end:
+                                for j_d_ in (
+                                    range(entity_dof_start, i_d + 1)
+                                    if ti.static(not is_backward)
+                                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                                ):
+                                    j_d = j_d_ if ti.static(not is_backward) else entities_info.dof_start[i_e] + j_d_
+
+                                    if j_d < i_d + 1:
+                                        rigid_global_info.mass_mat_L[i_d, j_d, i_b] = rigid_global_info.mass_mat[
+                                            i_d, j_d, i_b
+                                        ]
+
+                                if ti.static(implicit_damping):
+                                    I_d = [i_d, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else i_d
+                                    rigid_global_info.mass_mat_L[i_d, i_d, i_b] += (
+                                        dofs_info.damping[I_d] * rigid_global_info.substep_dt[i_b]
+                                    )
+                                    if ti.static(static_rigid_sim_config.integrator == gs.integrator.implicitfast):
+                                        if (dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.POSITION) or (
+                                            dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.VELOCITY
+                                        ):
+                                            rigid_global_info.mass_mat_L[i_d, i_d, i_b] += (
+                                                dofs_info.kv[I_d] * rigid_global_info.substep_dt[i_b]
+                                            )
+
+                        for i_d_ in (
+                            range(n_dofs)
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                        ):
+                            if i_d_ < n_dofs:
+                                i_d = entity_dof_end - i_d_ - 1
+                                rigid_global_info.mass_mat_D_inv[i_d, i_b] = (
+                                    1.0 / rigid_global_info.mass_mat_L[i_d, i_d, i_b]
                                 )
 
-                        if p_i0 == p_j0:
-                            rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = ti.sqrt(
-                                rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
-                            )
-                        else:
-                            rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = (
-                                rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
-                            ) / rigid_global_info.mass_mat_L_bw[1, j_pr, j_pr, i_b]
+                                for j_d_ in (
+                                    range(i_d - entity_dof_start)
+                                    if ti.static(not is_backward)
+                                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                                ):
+                                    if j_d_ < i_d - entity_dof_start:
+                                        j_d = i_d - j_d_ - 1
+                                        a = (
+                                            rigid_global_info.mass_mat_L[i_d, j_d, i_b]
+                                            * rigid_global_info.mass_mat_D_inv[i_d, i_b]
+                                        )
 
-            for i_d0 in (
-                range(n_dofs)
-                if ti.static(not is_backward)
-                else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
-            ):
-                for i_d1 in (
-                    range(i_d0 + 1)
+                                        for k_d_ in (
+                                            range(entity_dof_start, j_d + 1)
+                                            if ti.static(not is_backward)
+                                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                                        ):
+                                            k_d = (
+                                                k_d_
+                                                if ti.static(not is_backward)
+                                                else entities_info.dof_start[i_e] + k_d_
+                                            )
+                                            if k_d < j_d + 1:
+                                                rigid_global_info.mass_mat_L[j_d, k_d, i_b] -= (
+                                                    a * rigid_global_info.mass_mat_L[i_d, k_d, i_b]
+                                                )
+                                        rigid_global_info.mass_mat_L[i_d, j_d, i_b] = a
+
+                                # FIXME: Diagonal coeffs of L are ignored in computations, so no need to update them.
+                                rigid_global_info.mass_mat_L[i_d, i_d, i_b] = 1.0
+
+    else:
+        # This block is logically equivalent to the above block, but the access pattern has been adjusted to be safe
+        # for AD. However, it shows slightly numerical difference in the result, and thus it fails for a unit test
+        # ("test_urdf_rope"), while passing all the others. TODO: Investigate if we can fix this and only use this block.
+
+        # Assume this is the outermost loop
+        ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+        for i_e, i_b in ti.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1]):
+            if rigid_global_info._mass_mat_mask[i_e, i_b] == 1:
+                entity_dof_start = entities_info.dof_start[i_e]
+                entity_dof_end = entities_info.dof_end[i_e]
+                n_dofs = entities_info.n_dofs[i_e]
+
+                for i_d0 in (
+                    range(n_dofs)
                     if ti.static(not is_backward)
                     else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
                 ):
-                    if i_d0 < n_dofs and i_d1 < n_dofs and i_d1 <= i_d0:
+                    if i_d0 < n_dofs:
                         i_d = entity_dof_start + i_d0
-                        j_d = entity_dof_start + i_d1
                         i_pr = (entity_dof_start + entity_dof_end - 1) - i_d
-                        j_pr = (entity_dof_start + entity_dof_end - 1) - j_d
+                        for j_d_ in (
+                            range(entity_dof_start, i_d + 1)
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                        ):
+                            j_d = j_d_ if ti.static(not is_backward) else (j_d_ + entities_info.dof_start[i_e])
+                            j_pr = (entity_dof_start + entity_dof_end - 1) - j_d
+                            if j_d < i_d + 1:
+                                rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] = rigid_global_info.mass_mat[
+                                    i_d, j_d, i_b
+                                ]
+                                rigid_global_info.mass_mat_L_bw[0, j_pr, i_pr, i_b] = rigid_global_info.mass_mat[
+                                    i_d, j_d, i_b
+                                ]
 
-                        rigid_global_info.mass_mat_L[i_d, j_d, i_b] = (
-                            rigid_global_info.mass_mat_L_bw[1, j_pr, i_pr, i_b]
-                            / rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b]
-                        )
-
-                        if i_d == j_d:
-                            rigid_global_info.mass_mat_D_inv[i_d, i_b] = 1.0 / (
-                                rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b] ** 2
+                        if ti.static(implicit_damping):
+                            I_d = [i_d, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else i_d
+                            rigid_global_info.mass_mat_L_bw[0, i_pr, i_pr, i_b] += (
+                                dofs_info.damping[I_d] * rigid_global_info.substep_dt[i_b]
                             )
+                            if ti.static(static_rigid_sim_config.integrator == gs.integrator.implicitfast):
+                                if (dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.POSITION) or (
+                                    dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.VELOCITY
+                                ):
+                                    rigid_global_info.mass_mat_L_bw[0, i_pr, i_pr, i_b] += (
+                                        dofs_info.kv[I_d] * rigid_global_info.substep_dt[i_b]
+                                    )
+
+                # Cholesky-Banachiewicz algorithm (in the perturbed indices), access pattern is safe for autodiff
+                # https://en.wikipedia.org/wiki/Cholesky_decomposition
+                for p_i0 in (
+                    range(n_dofs)
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
+                    for p_j0 in (
+                        range(p_i0 + 1)
+                        if ti.static(not is_backward)
+                        else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                    ):
+                        if p_i0 < n_dofs and p_j0 < n_dofs and p_j0 <= p_i0:
+                            # j_pr <= i_pr
+                            i_pr = entity_dof_start + p_i0
+                            j_pr = entity_dof_start + p_j0
+
+                            sum = gs.ti_float(0.0)
+                            for p_k0 in (
+                                range(p_j0)
+                                if ti.static(not is_backward)
+                                else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                            ):
+                                # k_pr < j_pr
+                                if p_k0 < p_j0:
+                                    k_pr = entity_dof_start + p_k0
+                                    sum += (
+                                        rigid_global_info.mass_mat_L_bw[1, i_pr, k_pr, i_b]
+                                        * rigid_global_info.mass_mat_L_bw[1, j_pr, k_pr, i_b]
+                                    )
+
+                            if p_i0 == p_j0:
+                                rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = ti.sqrt(
+                                    rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
+                                )
+                            else:
+                                rigid_global_info.mass_mat_L_bw[1, i_pr, j_pr, i_b] = (
+                                    rigid_global_info.mass_mat_L_bw[0, i_pr, j_pr, i_b] - sum
+                                ) / rigid_global_info.mass_mat_L_bw[1, j_pr, j_pr, i_b]
+
+                for i_d0 in (
+                    range(n_dofs)
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                ):
+                    for i_d1 in (
+                        range(i_d0 + 1)
+                        if ti.static(not is_backward)
+                        else ti.static(range(static_rigid_sim_config.max_n_dofs_per_entity))
+                    ):
+                        if i_d0 < n_dofs and i_d1 < n_dofs and i_d1 <= i_d0:
+                            i_d = entity_dof_start + i_d0
+                            j_d = entity_dof_start + i_d1
+                            i_pr = (entity_dof_start + entity_dof_end - 1) - i_d
+                            j_pr = (entity_dof_start + entity_dof_end - 1) - j_d
+
+                            rigid_global_info.mass_mat_L[i_d, j_d, i_b] = (
+                                rigid_global_info.mass_mat_L_bw[1, j_pr, i_pr, i_b]
+                                / rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b]
+                            )
+
+                            if i_d == j_d:
+                                rigid_global_info.mass_mat_D_inv[i_d, i_b] = 1.0 / (
+                                    rigid_global_info.mass_mat_L_bw[1, i_pr, i_pr, i_b] ** 2
+                                )
 
 
 # ================================================== func_compute_mass_mask ==================================================
