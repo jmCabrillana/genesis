@@ -281,8 +281,11 @@ class RigidSolver(Solver):
             hibernation_thresh_vel=getattr(self, "_hibernation_thresh_vel", 0.0),
         )
 
-        if self._static_rigid_sim_config.requires_grad and self._static_rigid_sim_config.use_hibernation:
-            gs.raise_exception("Hibernation is not supported when requires_grad is True")
+        if self._static_rigid_sim_config.requires_grad:
+            if self._static_rigid_sim_config.use_hibernation:
+                gs.raise_exception("Hibernation is not supported yet when requires_grad is True")
+            if self._static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast:
+                gs.raise_exception("Only approximate_implicitfast integrator is supported for backward pass yet.")
 
         # Add terms for static inner loops, use 0 if not requires_grad to avoid re-compilation
         self._static_rigid_sim_config.max_n_links_per_entity = (
@@ -1556,6 +1559,17 @@ class RigidSolver(Solver):
         if self._static_rigid_sim_config.integrator != gs.integrator.approximate_implicitfast:
             raise NotImplementedError("Only approximate_implicitfast integrator is supported for backward pass yet.")
 
+        #   [func_update_acc]
+        backward_rigid_solver.kernel_update_acc.grad(
+            update_cacc=True,
+            dofs_state=self.dofs_state,
+            links_info=self.links_info,
+            links_state=self.links_state,
+            entities_info=self.entities_info,
+            rigid_global_info=self._rigid_global_info,
+            static_rigid_sim_config=self._static_rigid_sim_config,
+            is_backward=True,
+        )
         pass
 
     def substep_post_coupling(self, f):
@@ -6538,13 +6552,12 @@ def func_update_acc(
     static_rigid_sim_config: ti.template(),
     is_backward: ti.template(),
 ):
-    _B = dofs_state.ctrl_mode.shape[1]
-    n_links = links_info.root_idx.shape[0]
-    n_entities = entities_info.n_links.shape[0]
-
+    # Assume this is the outermost loop
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL)
     for i_0, i_b in (
-        ti.ndrange(1, _B) if ti.static(static_rigid_sim_config.use_hibernation) else ti.ndrange(n_entities, _B)
+        ti.ndrange(1, dofs_state.ctrl_mode.shape[1])
+        if ti.static(static_rigid_sim_config.use_hibernation)
+        else ti.ndrange(entities_info.n_links.shape[0], dofs_state.ctrl_mode.shape[1])
     ):
         for i_1 in (
             (
@@ -6561,62 +6574,61 @@ def func_update_acc(
                 else ti.static(range(1))
             )
         ):
-            i_e = (
-                rigid_global_info.awake_entities[i_1, i_b]
-                if ti.static(static_rigid_sim_config.use_hibernation)
-                else i_0
-            )
-
-            for i_l_ in (
-                range(entities_info.link_start[i_e], entities_info.link_end[i_e])
-                if ti.static(not is_backward)
-                else ti.static(range(static_rigid_sim_config.max_n_links_per_entity))
+            if i_1 < (
+                rigid_global_info.n_awake_entities[i_b] if ti.static(static_rigid_sim_config.use_hibernation) else 1
             ):
-                i_l = i_l_ if ti.static(not is_backward) else (i_l_ + entities_info.link_start[i_e])
+                i_e = (
+                    rigid_global_info.awake_entities[i_1, i_b]
+                    if ti.static(static_rigid_sim_config.use_hibernation)
+                    else i_0
+                )
 
-                if i_l < entities_info.link_end[i_e]:
-                    I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
-                    i_p = links_info.parent_idx[I_l]
+                for i_l_ in (
+                    range(entities_info.link_start[i_e], entities_info.link_end[i_e])
+                    if ti.static(not is_backward)
+                    else ti.static(range(static_rigid_sim_config.max_n_links_per_entity))
+                ):
+                    i_l = i_l_ if ti.static(not is_backward) else (i_l_ + entities_info.link_start[i_e])
 
-                    if i_p == -1:
-                        links_state.cdd_vel[i_l, i_b] = -rigid_global_info.gravity[i_b] * (
-                            1 - entities_info.gravity_compensation[i_e]
-                        )
-                        links_state.cdd_ang[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
-                        if ti.static(update_cacc):
-                            links_state.cacc_lin[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
-                            links_state.cacc_ang[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
-                    else:
-                        links_state.cdd_vel[i_l, i_b] = links_state.cdd_vel[i_p, i_b]
-                        links_state.cdd_ang[i_l, i_b] = links_state.cdd_ang[i_p, i_b]
-                        if ti.static(update_cacc):
-                            links_state.cacc_lin[i_l, i_b] = links_state.cacc_lin[i_p, i_b]
-                            links_state.cacc_ang[i_l, i_b] = links_state.cacc_ang[i_p, i_b]
+                    if i_l < entities_info.link_end[i_e]:
+                        I_l = [i_l, i_b] if ti.static(static_rigid_sim_config.batch_links_info) else i_l
+                        i_p = links_info.parent_idx[I_l]
 
-                    for i_d_ in (
-                        range(links_info.dof_start[I_l], links_info.dof_end[I_l])
-                        if ti.static(not is_backward)
-                        else ti.static(range(static_rigid_sim_config.max_n_dofs_per_link))
-                    ):
-                        i_d = i_d_ if ti.static(not is_backward) else (i_d_ + links_info.dof_start[I_l])
-
-                        if i_d < links_info.dof_end[I_l]:
-                            # cacc = cacc_parent + cdofdot * qvel + cdof * qacc
-                            local_cdd_vel = dofs_state.cdofd_vel[i_d, i_b] * dofs_state.vel[i_d, i_b]
-                            local_cdd_ang = dofs_state.cdofd_ang[i_d, i_b] * dofs_state.vel[i_d, i_b]
-                            links_state.cdd_vel[i_l, i_b] = links_state.cdd_vel[i_l, i_b] + local_cdd_vel
-                            links_state.cdd_ang[i_l, i_b] = links_state.cdd_ang[i_l, i_b] + local_cdd_ang
+                        if i_p == -1:
+                            links_state.cdd_vel[i_l, i_b] = -rigid_global_info.gravity[i_b] * (
+                                1 - entities_info.gravity_compensation[i_e]
+                            )
+                            links_state.cdd_ang[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
                             if ti.static(update_cacc):
-                                links_state.cacc_lin[i_l, i_b] = (
-                                    links_state.cacc_lin[i_l, i_b]
-                                    + local_cdd_vel
-                                    + dofs_state.cdof_vel[i_d, i_b] * dofs_state.acc[i_d, i_b]
-                                )
-                                links_state.cacc_ang[i_l, i_b] = (
-                                    links_state.cacc_ang[i_l, i_b]
-                                    + local_cdd_ang
-                                    + dofs_state.cdof_ang[i_d, i_b] * dofs_state.acc[i_d, i_b]
-                                )
+                                links_state.cacc_lin[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
+                                links_state.cacc_ang[i_l, i_b] = ti.Vector.zero(gs.ti_float, 3)
+                        else:
+                            links_state.cdd_vel[i_l, i_b] = links_state.cdd_vel[i_p, i_b]
+                            links_state.cdd_ang[i_l, i_b] = links_state.cdd_ang[i_p, i_b]
+                            if ti.static(update_cacc):
+                                links_state.cacc_lin[i_l, i_b] = links_state.cacc_lin[i_p, i_b]
+                                links_state.cacc_ang[i_l, i_b] = links_state.cacc_ang[i_p, i_b]
+
+                        for i_d_ in (
+                            range(links_info.dof_start[I_l], links_info.dof_end[I_l])
+                            if ti.static(not is_backward)
+                            else ti.static(range(static_rigid_sim_config.max_n_dofs_per_link))
+                        ):
+                            i_d = i_d_ if ti.static(not is_backward) else (i_d_ + links_info.dof_start[I_l])
+
+                            if i_d < links_info.dof_end[I_l]:
+                                # cacc = cacc_parent + cdofdot * qvel + cdof * qacc
+                                local_cdd_vel = dofs_state.cdofd_vel[i_d, i_b] * dofs_state.vel[i_d, i_b]
+                                local_cdd_ang = dofs_state.cdofd_ang[i_d, i_b] * dofs_state.vel[i_d, i_b]
+                                links_state.cdd_vel[i_l, i_b] += local_cdd_vel
+                                links_state.cdd_ang[i_l, i_b] += local_cdd_ang
+                                if ti.static(update_cacc):
+                                    links_state.cacc_lin[i_l, i_b] += (
+                                        local_cdd_vel + dofs_state.cdof_vel[i_d, i_b] * dofs_state.acc[i_d, i_b]
+                                    )
+                                    links_state.cacc_ang[i_l, i_b] += (
+                                        local_cdd_ang + dofs_state.cdof_ang[i_d, i_b] * dofs_state.acc[i_d, i_b]
+                                    )
 
 
 @ti.func
