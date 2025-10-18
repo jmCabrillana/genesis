@@ -329,7 +329,7 @@ class RigidSolver(Solver):
         self._func_vel_at_point = func_vel_at_point
         self._func_apply_external_force = func_apply_external_force
 
-        if self.is_active():
+        if self.is_active:
             self.data_manager = array_class.DataManager(self)
 
             self._rigid_global_info = self.data_manager.rigid_global_info
@@ -2181,6 +2181,15 @@ class RigidSolver(Solver):
             pos = pos.unsqueeze(0)
         if not unsafe and not torch.isin(links_idx, self._base_links_idx).all():
             gs.raise_exception("`links_idx` contains at least one link that is not a base link.")
+
+        # Raise exception for fixed links with at least one geom, except if setting same location for all envs at once
+        set_all_envs = torch.equal(torch.sort(envs_idx).values, self._scene._envs_idx)
+        has_fixed_geoms = any(
+            link.is_fixed and (link.geoms or link.vgeoms) for link in (self.links[i_l] for i_l in links_idx)
+        )
+        if has_fixed_geoms and not (set_all_envs and (torch.diff(pos, dim=0).abs() < gs.EPS).all()):
+            gs.raise_exception("Impossible to set env-specific pos for fixed links with at least one geometry.")
+
         kernel_set_links_pos(
             relative,
             pos,
@@ -2254,6 +2263,14 @@ class RigidSolver(Solver):
             quat = quat.unsqueeze(0)
         if not unsafe and not torch.isin(links_idx, self._base_links_idx).all():
             gs.raise_exception("`links_idx` contains at least one link that is not a base link.")
+
+        set_all_envs = torch.equal(torch.sort(envs_idx).values, self._scene._envs_idx)
+        has_fixed_geoms = any(
+            link.is_fixed and (link.geoms or link.vgeoms) for link in (self.links[i_l] for i_l in links_idx)
+        )
+        if has_fixed_geoms and not (set_all_envs and (torch.diff(quat, dim=0).abs() < gs.EPS).all()):
+            gs.raise_exception("Impossible to set env-specific quat for fixed links with at least one geometry.")
+
         kernel_set_links_quat(
             relative,
             quat,
@@ -2905,7 +2922,7 @@ class RigidSolver(Solver):
         from genesis.engine.couplers import LegacyCoupler
 
         if not isinstance(self.sim.coupler, LegacyCoupler):
-            raise gs.GenesisException("Method only supported when using 'LegacyCoupler' coupler type.")
+            gs.raise_exception("Method only supported when using 'LegacyCoupler' coupler type.")
 
         aabb_min = ti_to_torch(self.geoms_state.aabb_min, envs_idx, transpose=True, unsafe=unsafe)
         aabb_max = ti_to_torch(self.geoms_state.aabb_max, envs_idx, transpose=True, unsafe=unsafe)
@@ -7474,7 +7491,8 @@ def kernel_update_vgeoms_render_T(
             vgeoms_render_T[(i_g, i_b, *J)] = ti.cast(geom_T[J], ti.float32)
 
 
-@ti.kernel(pure=gs.use_pure)
+# FIXME: This kernel cannot use 'pure' because  'gs.Tensor' is currently not support by GsTaichi
+@ti.kernel(pure=False)
 def kernel_get_state(
     qpos: ti.types.ndarray(),
     vel: ti.types.ndarray(),
@@ -7521,7 +7539,8 @@ def kernel_get_state(
         friction_ratio[i_b, i_l] = geoms_state.friction_ratio[i_l, i_b]
 
 
-@ti.kernel(pure=gs.use_pure)
+# FIXME: This kernel cannot use 'pure' because  'gs.Tensor' is currently not support by GsTaichi
+@ti.kernel(pure=False)
 def kernel_set_state(
     qpos: ti.types.ndarray(),
     dofs_vel: ti.types.ndarray(),
