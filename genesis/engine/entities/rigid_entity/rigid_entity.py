@@ -1697,15 +1697,16 @@ class RigidEntity(Entity):
                 if _quat is not None and _quat.requires_grad:
                     _quat._backward_from_ti(self.set_quat_grad, _envs_idx, _relative, _unsafe)
 
-            # elif k == "qpos":
-            #     _qpos = tgt["qpos"]
-            #     _qs_idx_local = tgt["qs_idx_local"]
-            #     _envs_idx = tgt["envs_idx"]
-            #     _unsafe = tgt["unsafe"]
+            elif k == "qpos":
+                _qpos = tgt["qpos"]
+                _qs_idx_local = tgt["qs_idx_local"]
+                _envs_idx = tgt["envs_idx"]
+                _unsafe = tgt["unsafe"]
 
-            #     self.set_qpos(
-            #         _qpos, qs_idx_local=_qs_idx_local, envs_idx=_envs_idx, zero_velocity=zero_velocity, unsafe=_unsafe
-            #     )
+                if _qpos is not None and _qpos.requires_grad:
+                    # TODO: Not implemented yet
+                    raise NotImplementedError("Backward pass for set_qpos_grad is not implemented yet.")
+
             elif k == "dofs_velocity":
                 _velocity = tgt["velocity"]
                 _dofs_idx_local = tgt["dofs_idx_local"]
@@ -1714,9 +1715,6 @@ class RigidEntity(Entity):
 
                 if _velocity is not None and _velocity.requires_grad:
                     _velocity._backward_from_ti(self.set_dofs_velocity_grad, _dofs_idx_local, _envs_idx, _unsafe)
-
-            pass
-        pass
 
     def save_ckpt(self, ckpt_name):
         if ckpt_name not in self._ckpt:

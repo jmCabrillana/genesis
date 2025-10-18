@@ -2058,6 +2058,15 @@ class RigidSolver(Solver):
                     gs.raise_exception("Expecting 1D output tensor.")
         return tensor, _inputs_idx, envs_idx
 
+    def _sanitize_1D_io_variables_grad(
+        self,
+        grad_after_sanitization,
+        grad_before_sanitization,
+    ):
+        if grad_after_sanitization.shape != grad_before_sanitization.shape:
+            gs.raise_exception("Shape of grad_after_sanitization and grad_before_sanitization do not match.")
+        return grad_after_sanitization
+
     def _sanitize_2D_io_variables(
         self,
         tensor,
@@ -2569,10 +2578,17 @@ class RigidSolver(Solver):
             )
 
     def set_dofs_velocity_grad(self, dofs_idx, envs_idx, unsafe, velocity_grad):
-        raise NotImplementedError("Backward pass for set_dofs_velocity_grad is not implemented yet.")
-        velocity_grad_, dofs_idx_, envs_idx_ = self._sanitize_1D_io_variables(
-            velocity_grad, dofs_idx, self.n_dofs, envs_idx, skip_allocation=True, unsafe=unsafe
+        velocity_grad_, dofs_idx, envs_idx = self._sanitize_1D_io_variables(
+            velocity_grad.clone(), dofs_idx, self.n_dofs, envs_idx, skip_allocation=True, unsafe=unsafe
         )
+        if self.n_envs == 0:
+            velocity_grad_ = velocity_grad_.unsqueeze(0)
+        kernel_set_dofs_velocity_grad(
+            velocity_grad_, dofs_idx, envs_idx, self.dofs_state, self._static_rigid_sim_config
+        )
+        if self.n_envs == 0:
+            velocity_grad_ = velocity_grad_.squeeze(0)
+        velocity_grad.data = self._sanitize_1D_io_variables_grad(velocity_grad_, velocity_grad)
 
     def set_dofs_position(self, position, dofs_idx=None, envs_idx=None, *, skip_forward=False, unsafe=False):
         position, dofs_idx, envs_idx = self._sanitize_1D_io_variables(
@@ -8018,6 +8034,20 @@ def kernel_set_dofs_velocity(
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
     for i_d_, i_b_ in ti.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
         dofs_state.vel[dofs_idx[i_d_], envs_idx[i_b_]] = velocity[i_b_, i_d_]
+
+
+@ti.kernel(pure=gs.use_pure)
+def kernel_set_dofs_velocity_grad(
+    velocity_grad: ti.types.ndarray(),
+    dofs_idx: ti.types.ndarray(),
+    envs_idx: ti.types.ndarray(),
+    dofs_state: array_class.DofsState,
+    static_rigid_sim_config: ti.template(),
+):
+    ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
+    for i_d_, i_b_ in ti.ndrange(dofs_idx.shape[0], envs_idx.shape[0]):
+        velocity_grad[i_b_, i_d_] = dofs_state.vel.grad[dofs_idx[i_d_], envs_idx[i_b_]]
+        dofs_state.vel.grad[dofs_idx[i_d_], envs_idx[i_b_]] = 0.0
 
 
 @ti.kernel(pure=gs.use_pure)

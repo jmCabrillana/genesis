@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(seed=0, precision="32", debug=True)
+    gs.init(seed=0, precision="32", debug=False, logging_level="warning", backend=gs.cpu)
 
     ########################## create a scene ##########################
     dt = 1e-2
@@ -83,18 +83,9 @@ def main():
     lr = 1e-2
     record_every = 50
 
-    if optimize_init_pos:
-        init_pos = gs.tensor([0.3, 0.1, 0.28], requires_grad=True)
-        init_quat = gs.tensor([1.0, 0.0, 0.0, 0.0], requires_grad=True)
-        init_vel = gs.tensor([0.0, 0.0, 1.0], requires_grad=True)
-        init_ang = gs.tensor([1.0, 1.0, 1.0], requires_grad=True)
-        optimizer = torch.optim.Adam([init_pos, init_quat, init_vel, init_ang], lr=lr)
-    else:
-        init_pos = gs.tensor([0.3, 0.1, 0.28], requires_grad=False)
-        init_quat = gs.tensor([1.0, 0.0, 0.0, 0.0], requires_grad=False)
-        init_vel = gs.tensor([0.0, 0.0, 1.0], requires_grad=True)
-        init_ang = gs.tensor([1.0, 1.0, 1.0], requires_grad=True)
-        optimizer = torch.optim.Adam([init_vel, init_ang], lr=lr)
+    init_pos = gs.tensor([0.3, 0.1, 0.28], requires_grad=True)
+    init_quat = gs.tensor([1.0, 0.0, 0.0, 0.0], requires_grad=True)
+    optimizer = torch.optim.Adam([init_pos, init_quat], lr=lr)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_iter, eta_min=1e-3)
 
@@ -106,8 +97,6 @@ def main():
 
         box.set_pos(init_pos)
         box.set_quat(init_quat)
-        # box.set_velocity(init_vel)
-        # box.set_angular_velocity(init_ang)
         if do_record:
             cam.start_recording()
 
@@ -137,7 +126,7 @@ def main():
         if do_record:
             fps = 1.0 / dt
             script_name = __file__.split("/")[-1].split(".")[0]
-            dir_name = "posvel" if optimize_init_pos else "vel"
+            dir_name = "posquat"
             cam.stop_recording(save_to_filename=f"output/{script_name}/{dir_name}/cam_{iter:04d}.mp4", fps=fps)
 
     print("====================== Optimization Results")
@@ -148,8 +137,6 @@ def main():
     print("goal quat: ", goal_quat)
     print("init quat: ", init_quat)
     print()
-
-    print("init vel: ", init_vel)
 
 
 if __name__ == "__main__":
