@@ -58,6 +58,7 @@ class RigidSolverState:
         }
         self.qpos = gs.zeros(scene.sim.rigid_solver._batch_shape(scene.sim.rigid_solver.n_qs, True), **args)
         self.dofs_vel = gs.zeros(scene.sim.rigid_solver._batch_shape(scene.sim.rigid_solver.n_dofs, True), **args)
+        self.dofs_acc = gs.zeros(scene.sim.rigid_solver._batch_shape(scene.sim.rigid_solver.n_dofs, True), **args)
         n_links = scene.sim.rigid_solver.n_links
         n_geoms = scene.sim.rigid_solver.n_geoms
         self.links_pos = gs.zeros(scene.sim.rigid_solver._batch_shape((n_links, 3), True), **args)
