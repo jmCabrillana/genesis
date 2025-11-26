@@ -5,13 +5,14 @@ import time
 from enum import Enum
 from pathlib import Path
 from typing import Any
-
+import sys
 import numpy as np
 import pytest
 import torch
 import wandb
 
 import genesis as gs
+
 
 from .utils import (
     get_hardware_fingerprint,
@@ -258,7 +259,7 @@ def factory_logger(stream_writers):
         def __enter__(self):
             nonlocal stream_writers
 
-            if "WANDB_API_KEY" in os.environ:
+            if False: # "WANDB_API_KEY" in os.environ:
                 assert gs.backend is not None
                 revision, timestamp = get_git_commit_info()
 
@@ -700,3 +701,15 @@ def test_box_pyramid(factory_logger, request, n_cubes, enable_island, gjk, n_env
         }
     ) as logger:
         logger.write(request.getfixturevalue("box_pyramid"))
+
+
+@pytest.mark.parametrize(
+    "solver, n_envs, gjk, backend",
+    [
+        (gs.constraint_solver.CG, 0, None, gs.cpu),
+    ],
+)
+def test_anymal_c_debug(anymal_c, solver, n_envs, gjk, backend):
+    # anymal_c fixture 안에서 print 한 것들이 -s 옵션이면 그대로 보여야 함
+    res = anymal_c
+    print("DEBUG RESULT:", res, file=sys.stderr, flush=True)

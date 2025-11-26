@@ -107,6 +107,12 @@ class StructRigidGlobalInfo(metaclass=BASE_METACLASS):
     n_equalities_candidate: V_ANNOTATION
     hibernation_thresh_acc: V_ANNOTATION
     hibernation_thresh_vel: V_ANNOTATION
+    n_qs: V_ANNOTATION
+    n_dofs: V_ANNOTATION
+    n_links: V_ANNOTATION
+    n_joints: V_ANNOTATION
+    n_entities: V_ANNOTATION
+    n_batches: V_ANNOTATION
     EPS: V_ANNOTATION
 
 
@@ -152,6 +158,12 @@ def get_rigid_global_info(solver):
         n_equalities_candidate=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_equalities_candidate),
         hibernation_thresh_acc=V_SCALAR_FROM(dtype=gs.ti_float, value=solver._hibernation_thresh_acc),
         hibernation_thresh_vel=V_SCALAR_FROM(dtype=gs.ti_float, value=solver._hibernation_thresh_vel),
+        n_qs=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_qs),
+        n_dofs=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_dofs),
+        n_links=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_links),
+        n_joints=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_joints),
+        n_entities=V_SCALAR_FROM(dtype=gs.ti_int, value=solver.n_entities),
+        n_batches=V_SCALAR_FROM(dtype=gs.ti_int, value=solver._B),
         EPS=V_SCALAR_FROM(dtype=gs.ti_float, value=gs.EPS),
     )
 
