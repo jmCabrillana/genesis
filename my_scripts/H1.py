@@ -192,3 +192,24 @@ class GenesisH1DiffrigidEnv:
         total_loss = (pos_loss + reg_loss).mean()  # scalar genesis.Tensor (subclass of torch.Tensor)
 
         return total_loss, np.asarray(frames)
+
+    def get_state_vector(self):
+        """
+        Extract full state vector for surrogate network.
+        Returns: [n_envs, state_dim] tensor with gradients
+        """
+        # Get robot state
+        dof_pos = self.humanoid.get_dofs_position()  # [n_envs, n_dofs]
+        dof_vel = self.humanoid.get_dofs_velocity()  # [n_envs, n_dofs]
+        base_pos = self.humanoid.get_pos()  # [n_envs, 3]
+        base_quat = self.humanoid.get_quat()  # [n_envs, 4]
+        
+        # Concatenate all state information
+        state = torch.cat([
+            dof_pos,
+            dof_vel,
+            base_pos,
+            base_quat
+        ], dim=-1)  # [n_envs, n_dofs*2 + 7]
+        
+        return state
