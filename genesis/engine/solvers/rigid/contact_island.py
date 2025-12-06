@@ -74,16 +74,17 @@ class ContactIsland:
     @ti.kernel
     def clear(self):
         ti.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
-        for i_e, i_b in ti.ndrange(self.solver.n_entities, self.solver._B):
-            self.entity_edge[i_e, i_b].n = 0
-            self.island_col[i_e, i_b].n = 0
-            self.island_entity[i_e, i_b].n = 0
-            self.entity_island[i_e, i_b] = -1
+        for i_b in range(self.solver._B):
+            for i_e in range(self.solver.n_entities):
+                self.contact_island_state.entity_edge.n[i_e, i_b] = 0
+                self.contact_island_state.island_col.n[i_e, i_b] = 0
+                self.contact_island_state.island_entity.n[i_e, i_b] = 0
+                self.contact_island_state.entity_island[i_e, i_b] = -1
 
         ti.loop_config(serialize=self.solver._para_level < gs.PARA_LEVEL.ALL)
         for i_b in range(self.solver._B):
-            self.n_edges[i_b] = 0
-            self.n_islands[i_b] = 0
+            self.contact_island_state.n_edges[i_b] = 0
+            self.contact_island_state.n_islands[i_b] = 0
 
     @ti.func
     def add_edge(self, link_a, link_b, i_b):

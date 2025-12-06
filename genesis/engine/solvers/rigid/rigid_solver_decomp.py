@@ -1392,6 +1392,16 @@ class RigidSolver(Solver):
         for entity in self._entities:
             entity.reset_grad()
         self._queried_states.clear()
+        
+        # Clear cached zero-copy tensors to prevent computational graph corruption
+        # across iterations when using differentiable rigid body dynamics
+        if gs.use_zerocopy:
+            for field_name in ['vel', 'pos', 'acc']:
+                field = getattr(self.dofs_state, field_name, None)
+                if field is not None and hasattr(field, '_tc'):
+                    delattr(field, '_tc')
+                if field is not None and hasattr(field, '_T_tc'):
+                    delattr(field, '_T_tc')
 
     def update_geoms_render_T(self):
         kernel_update_geoms_render_T(
